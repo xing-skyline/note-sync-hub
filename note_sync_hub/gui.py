@@ -654,6 +654,12 @@ class SyncApp(tk.Tk):
         self.source_combo.configure(state="readonly" if one_way and values else "disabled")
         selected_scope = self.scope_var.get() == "selected"
         mapping = one_way and selected_scope
+        if not mapping:
+            preserve_label = next(
+                label for label, target_mode in TARGET_MODE_LABELS.items()
+                if target_mode == TargetMode.PRESERVE
+            )
+            self.target_mode_var.set(preserve_label)
         self.target_mode_combo.configure(state="readonly" if mapping else "disabled")
         selected_mode = TARGET_MODE_LABELS[self.target_mode_var.get()] == TargetMode.SELECTED
         source = next((endpoint for endpoint in enabled_endpoints if endpoint.label == self.source_var.get()), None)
@@ -705,6 +711,7 @@ class SyncApp(tk.Tk):
     def _collect_options(self) -> SyncOptions:
         endpoints = self._sync_endpoints()
         mode = MODE_LABELS[self.mode_var.get()]
+        scope_all = self.scope_var.get() == "all"
         source = (
             next((endpoint for endpoint in endpoints if endpoint.label == self.source_var.get()), None)
             if mode == SyncMode.ONE_WAY
@@ -715,19 +722,26 @@ class SyncApp(tk.Tk):
             if mode == SyncMode.BIDIRECTIONAL
             else None
         )
+        mapping_enabled = mode == SyncMode.ONE_WAY and not scope_all
+        target_mode = (
+            TARGET_MODE_LABELS[self.target_mode_var.get()]
+            if mapping_enabled
+            else TargetMode.PRESERVE
+        )
         selected_folders = {endpoint: self._selected_folders(endpoint) for endpoint in endpoints}
         options = SyncOptions(
             mode=mode,
             endpoints=endpoints,
             source=source,
             primary=primary,
-            scope_all=self.scope_var.get() == "all",
+            scope_all=scope_all,
             selected_folders=selected_folders,
             include_subfolders=self.include_subfolders_var.get(),
-            target_mode=TARGET_MODE_LABELS[self.target_mode_var.get()],
+            target_mode=target_mode,
             target_folders={
                 endpoint: self.target_folder_vars[endpoint].get().strip()
                 for endpoint in endpoints
+                if target_mode == TargetMode.SELECTED and endpoint != source
             },
             propagate_deletions=self.propagate_deletions_var.get(),
         )
