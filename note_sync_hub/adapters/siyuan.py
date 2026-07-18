@@ -25,6 +25,12 @@ from .base import AdapterError, NoteAdapter
 GLOBAL_ID_ATTR = "custom-notesynchub-id"
 TAGS_ATTR = "custom-notesynchub-tags"
 CONTAINER_ATTR = "custom-notesynchub-container"
+TRASH_CONTAINER_ATTR = "custom-notesynchub-trash-container"
+TRASH_FOLDER_TITLE = "Note Sync Hub 回收站"
+TRASH_FOLDER_BODY = (
+    "> 这是 Note Sync Hub 的安全回收站。此目录及其子文档不会参与同步；"
+    "需要恢复时，请在思源笔记中将文档手动移出此目录。\n"
+)
 
 
 def _safe_document_title(value: str) -> str:
@@ -119,9 +125,32 @@ class SiYuanAdapter(NoteAdapter):
         rows = self._request("/api/query/sql", {"stmt": statement}) or []
         return [row for row in rows if isinstance(row, dict)]
 
+    @staticmethod
+    def _trash_container_ids(rows: List[Dict[str, Any]]) -> set[str]:
+        marker = f'{TRASH_CONTAINER_ATTR}="1"'
+        return {
+            str(row.get("id", ""))
+            for row in rows
+            if row.get("id") and marker in str(row.get("ial", ""))
+        }
+
+    @classmethod
+    def _active_document_rows(cls, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        trash_ids = cls._trash_container_ids(rows)
+        if not trash_ids:
+            return rows
+        active: List[Dict[str, Any]] = []
+        for row in rows:
+            block_id = str(row.get("id", ""))
+            path_parts = str(row.get("path", "")).replace("\\", "/").strip("/").split("/")
+            if block_id in trash_ids or any(part in trash_ids for part in path_parts[:-1]):
+                continue
+            active.append(row)
+        return active
+
     def list_folders(self) -> List[str]:
         folders = set(self._load_notebooks())
-        for row in self._document_rows():
+        for row in self._active_document_rows(self._document_rows()):
             notebook = self._notebook_name(str(row.get("box", "")))
             hpath = normalize_folder(str(row.get("hpath", "")))
             if notebook:
@@ -173,7 +202,7 @@ class SiYuanAdapter(NoteAdapter):
 
     def list_notes(self) -> List[Note]:
         notes: List[Note] = []
-        for row in self._document_rows():
+        for row in self._active_document_rows(self._document_rows()):
             block_id = str(row.get("id", ""))
             if not block_id:
                 continue
@@ -231,6 +260,7 @@ class SiYuanAdapter(NoteAdapter):
                     native={
                         "notebook_id": str(row.get("box", "")),
                         "hpath": hpath,
+                        "path": str(row.get("path", "")),
                         "attrs": attrs,
                     },
                 )
@@ -380,5 +410,42 @@ class SiYuanAdapter(NoteAdapter):
     def set_global_id(self, note: Note, global_id: str) -> None:
         self._set_attrs(note.native_id, {GLOBAL_ID_ATTR: global_id})
 
+    def _ensure_trash_container(self) -> str:
+        rows = self._document_rows()
+        trash_ids = self._trash_container_ids(rows)
+        for row in rows:
+            block_id = str(row.get("id", ""))
+            if block_id in trash_ids:
+                return block_id
+
+        notebook_name = self.config.siyuan_default_notebook or "Note Sync Hub"
+        notebook_id = self._ensure_notebook(notebook_name)
+        for index in range(1, 100):
+            title = TRASH_FOLDER_TITLE if index == 1 else f"{TRASH_FOLDER_TITLE}（{index}）"
+            matches = self._ids_by_hpath(notebook_id, title)
+            for candidate in matches:
+                if self._attrs(candidate).get(TRASH_CONTAINER_ATTR) == "1":
+                    return candidate
+            if matches:
+                continue
+            block_id = self._create_document(notebook_id, title, TRASH_FOLDER_BODY)
+            if not block_id:
+                raise AdapterError("思源 Note Sync Hub 回收站创建失败。")
+            self._set_attrs(
+                block_id,
+                {
+                    CONTAINER_ATTR: "1",
+                    TRASH_CONTAINER_ATTR: "1",
+                },
+            )
+            return block_id
+        raise AdapterError("思源中存在过多同名回收站文档，无法创建安全回收站。")
+
     def move_to_trash(self, note: Note) -> None:
-        raise AdapterError("为防止误删，Note Sync Hub 第一版不会自动删除思源文档。")
+        trash_id = self._ensure_trash_container()
+        if note.native_id == trash_id:
+            raise AdapterError("不能将 Note Sync Hub 回收站移动到自身。")
+        self._request(
+            "/api/filetree/moveDocsByID",
+            {"fromIDs": [note.native_id], "toID": trash_id},
+        )

@@ -11,6 +11,8 @@ from note_sync_hub.adapters.siyuan import (
     CONTAINER_ATTR,
     GLOBAL_ID_ATTR,
     TAGS_ATTR,
+    TRASH_CONTAINER_ATTR,
+    TRASH_FOLDER_TITLE,
     SiYuanAdapter,
 )
 from note_sync_hub.attachments import bytes_sha256, canonical_asset_uri
@@ -35,7 +37,7 @@ def source_note(endpoint=Endpoint.JOPLIN, *, body="正文\n", assets=None, tags=
 
 class StubSiYuanAdapter(SiYuanAdapter):
     def __init__(self):
-        super().__init__(AppConfig(siyuan_token="token"))
+        super().__init__(AppConfig(siyuan_token="token", siyuan_default_notebook="Knowledge"))
         self.calls = []
 
     def _request(self, path, payload=None, *, binary=False):
@@ -110,10 +112,56 @@ class SiYuanAdapterTests(unittest.TestCase):
         self.assertEqual(attrs[-1]["attrs"][GLOBAL_ID_ATTR], "new-group")
         self.assertEqual(attrs[-1]["attrs"][TAGS_ATTR], '["工作"]')
 
-    def test_siyuan_delete_is_deliberately_disabled(self):
+    def test_siyuan_delete_moves_document_to_managed_trash(self):
         adapter = StubSiYuanAdapter()
-        with self.assertRaisesRegex(AdapterError, "不会自动删除思源"):
-            adapter.move_to_trash(source_note(Endpoint.SIYUAN))
+        note = source_note(Endpoint.SIYUAN)
+        note.native["notebook_id"] = "another-box"
+
+        adapter.move_to_trash(note)
+
+        creates = [payload for path, payload, _binary in adapter.calls if path == "/api/filetree/createDocWithMd"]
+        self.assertEqual(creates[-1]["path"], f"/{TRASH_FOLDER_TITLE}")
+        attrs = [payload for path, payload, _binary in adapter.calls if path == "/api/attr/setBlockAttrs"]
+        self.assertEqual(attrs[-1]["attrs"][TRASH_CONTAINER_ATTR], "1")
+        moves = [payload for path, payload, _binary in adapter.calls if path == "/api/filetree/moveDocsByID"]
+        self.assertEqual(moves[-1], {"fromIDs": ["source"], "toID": "target-id"})
+
+    def test_scan_and_folder_list_exclude_managed_trash_subtree(self):
+        adapter = StubSiYuanAdapter()
+        normal_row = adapter._document_rows()[0]
+        trash_rows = [
+            {
+                "id": "trash-id",
+                "box": "box-1",
+                "hpath": "/已重命名的回收站",
+                "content": "已重命名的回收站",
+                "updated": "20260718120000",
+                "ial": f'{{: {TRASH_CONTAINER_ATTR}="1"}}',
+                "path": "/trash-id.sy",
+            },
+            {
+                "id": "deleted-id",
+                "box": "box-1",
+                "hpath": "/已重命名的回收站/已删除笔记",
+                "content": "已删除笔记",
+                "updated": "20260718120000",
+                "ial": "",
+                "path": "/trash-id/deleted-id.sy",
+            },
+        ]
+        adapter._document_rows = lambda: [normal_row, *trash_rows]
+
+        self.assertEqual([note.native_id for note in adapter.list_notes()], ["doc-1"])
+        folders = adapter.list_folders()
+        self.assertNotIn("Knowledge/已重命名的回收站", folders)
+        self.assertNotIn("Knowledge/已重命名的回收站/已删除笔记", folders)
+        create_count = sum(path == "/api/filetree/createDocWithMd" for path, _payload, _binary in adapter.calls)
+        adapter.config.siyuan_default_notebook = "另一个默认笔记本"
+        self.assertEqual(adapter._ensure_trash_container(), "trash-id")
+        self.assertEqual(
+            sum(path == "/api/filetree/createDocWithMd" for path, _payload, _binary in adapter.calls),
+            create_count,
+        )
 
     def test_create_refuses_to_overwrite_an_unrelated_siyuan_document(self):
         adapter = StubSiYuanAdapter()

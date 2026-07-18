@@ -289,23 +289,28 @@ class EnginePlannerTests(unittest.TestCase):
         )).operations[0]
         self.assertEqual(operation.action, OperationAction.SKIP)
 
-    def test_delete_propagation_never_targets_siyuan(self):
+    def test_delete_propagation_includes_siyuan_managed_trash(self):
         global_id = "group-4"
         old_j = make_note(Endpoint.JOPLIN, native_id="j", global_id=global_id)
         current_o = make_note(Endpoint.OBSIDIAN, native_id="o", global_id=global_id)
         current_s = make_note(Endpoint.SIYUAN, native_id="s", global_id=global_id)
-        engine, _adapters, _state = self.engine(
+        engine, adapters, _state = self.engine(
             {Endpoint.OBSIDIAN: [current_o], Endpoint.SIYUAN: [current_s]},
             {global_id: state_record(old_j, current_o, current_s)},
         )
-        operations = engine.preview(SyncOptions(
+        plan = engine.preview(SyncOptions(
             mode=SyncMode.ONE_WAY,
             endpoints=tuple(Endpoint),
             source=Endpoint.JOPLIN,
             propagate_deletions=True,
-        )).operations
-        self.assertEqual([item.action for item in operations], [OperationAction.DELETE, OperationAction.SKIP])
-        self.assertEqual(operations[0].targets, (Endpoint.OBSIDIAN,))
+        ))
+        operations = plan.operations
+        self.assertEqual([item.action for item in operations], [OperationAction.DELETE])
+        self.assertEqual(operations[0].targets, (Endpoint.OBSIDIAN, Endpoint.SIYUAN))
+        self.assertIn("思源移入", operations[0].reason)
+        self.assertEqual(engine.execute(plan).errors, [])
+        self.assertEqual(adapters[Endpoint.OBSIDIAN].deleted, ["o"])
+        self.assertEqual(adapters[Endpoint.SIYUAN].deleted, ["s"])
 
     def test_bidirectional_non_primary_deletion_is_restored_from_primary(self):
         global_id = "restore-secondary"
@@ -341,8 +346,8 @@ class EnginePlannerTests(unittest.TestCase):
             primary=Endpoint.JOPLIN,
             propagate_deletions=True,
         )).operations
-        self.assertEqual([item.action for item in operations], [OperationAction.DELETE, OperationAction.SKIP])
-        self.assertEqual(operations[0].targets, (Endpoint.OBSIDIAN,))
+        self.assertEqual([item.action for item in operations], [OperationAction.DELETE])
+        self.assertEqual(operations[0].targets, (Endpoint.OBSIDIAN, Endpoint.SIYUAN))
         self.assertIn("主端 Joplin", operations[0].reason)
 
     def test_bidirectional_primary_deletion_is_retained_when_delete_is_off(self):

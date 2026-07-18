@@ -679,10 +679,10 @@ class SyncApp(tk.Tk):
                 check.configure(state="normal" if one_way else "disabled")
         if one_way:
             self.delete_text_var.set("将来源端的删除同步到目标端（危险，默认关闭）")
-            self.delete_hint_var.set("开启后使用废纸篓/回收站；思源不会自动删除。")
+            self.delete_hint_var.set("Joplin 用废纸篓，Obsidian 用系统回收站，思源移入统一回收站。")
         else:
             self.delete_text_var.set("将双向主端的删除同步到其他端（危险，默认关闭）")
-            self.delete_hint_var.set("非主端删除会从主端恢复；思源不会自动删除。")
+            self.delete_hint_var.set("非主端删除会恢复；思源副本移入统一的 Note Sync Hub 回收站。")
         endpoints = self._sync_endpoints()
 
         for endpoint, listbox in self.folder_lists.items():
@@ -961,7 +961,10 @@ class SyncApp(tk.Tk):
         if unresolved:
             parts.append(f"另有 {unresolved} 项未处理冲突会被跳过。")
         if deletes:
-            parts.append(f"其中 {deletes} 项会删除目标副本；Joplin 使用废纸篓，Obsidian 使用 Windows 回收站。")
+            parts.append(
+                f"其中 {deletes} 项会移除目标副本；Joplin 使用废纸篓，Obsidian 使用 Windows 回收站，"
+                "思源移入统一的 Note Sync Hub 回收站。"
+            )
         parts.append("执行前还会再次扫描；只要预览后有变化，就会自动停止。是否继续？")
         if not messagebox.askyesno("确认执行同步", "\n\n".join(parts), parent=self):
             return

@@ -414,33 +414,20 @@ class SyncEngine:
                         state_record=record,
                     )
                 ]
-            safe_targets = tuple(target for target in existing_targets if target != Endpoint.SIYUAN)
-            operations: List[SyncOperation] = []
-            if safe_targets:
-                operations.append(
-                    SyncOperation(
-                        global_id=global_id,
-                        action=OperationAction.DELETE,
-                        title=str(source_record.get("title", "已删除笔记")),
-                        versions=versions,
-                        targets=safe_targets,
-                        reason="来源端删除将传播到目标端；Joplin 使用废纸篓，Obsidian 使用 Windows 回收站。",
-                        state_record=record,
-                    )
+            return [
+                SyncOperation(
+                    global_id=global_id,
+                    action=OperationAction.DELETE,
+                    title=str(source_record.get("title", "已删除笔记")),
+                    versions=versions,
+                    targets=existing_targets,
+                    reason=(
+                        "来源端删除将传播到目标端；Joplin 使用废纸篓，Obsidian 使用 Windows 回收站，"
+                        "思源移入统一的 Note Sync Hub 回收站。"
+                    ),
+                    state_record=record,
                 )
-            if Endpoint.SIYUAN in existing_targets:
-                operations.append(
-                    SyncOperation(
-                        global_id=global_id,
-                        action=OperationAction.SKIP,
-                        title=str(source_record.get("title", "已删除笔记")),
-                        versions=versions,
-                        targets=(Endpoint.SIYUAN,),
-                        reason="思源暂无可验证的安全回收站接口，第一版不会自动删除思源文档。",
-                        state_record=record,
-                    )
-                )
-            return operations
+            ]
 
         if not options.includes_note(source):
             return []
@@ -616,33 +603,21 @@ class SyncEngine:
                         state_record=record,
                     )
                 ]
-            safe_targets = tuple(target for target in current_targets if target != Endpoint.SIYUAN)
-            operations: List[SyncOperation] = []
-            if safe_targets:
-                operations.append(
-                    SyncOperation(
-                        global_id=global_id,
-                        action=OperationAction.DELETE,
-                        title=next(iter(versions.values())).title,
-                        versions=versions,
-                        targets=safe_targets,
-                        reason=f"主端 {primary.label} 的删除将传播到仍存在的安全目标端。",
-                        state_record=record,
-                    )
+            return [
+                SyncOperation(
+                    global_id=global_id,
+                    action=OperationAction.DELETE,
+                    title=next(iter(versions.values())).title,
+                    versions=versions,
+                    targets=current_targets,
+                    reason=(
+                        f"主端 {primary.label} 的删除将传播到仍存在的目标端；"
+                        "Joplin 使用废纸篓，Obsidian 使用 Windows 回收站，"
+                        "思源移入统一的 Note Sync Hub 回收站。"
+                    ),
+                    state_record=record,
                 )
-            if Endpoint.SIYUAN in current_targets:
-                operations.append(
-                    SyncOperation(
-                        global_id=global_id,
-                        action=OperationAction.SKIP,
-                        title=versions[Endpoint.SIYUAN].title,
-                        versions=versions,
-                        targets=(Endpoint.SIYUAN,),
-                        reason="思源暂无可验证的安全回收站接口，第一版不会自动删除思源文档。",
-                        state_record=record,
-                    )
-                )
-            return operations
+            ]
 
         if not record:
             if not versions:
