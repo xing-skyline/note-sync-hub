@@ -1,0 +1,11 @@
+{
+  "joplin_api_base": "http://127.0.0.1:41184",
+  "joplin_token": "",
+  "obsidian_vault_path": "D:\\Notes\\MyVault",
+  "siyuan_api_base": "http://127.0.0.1:6806",
+  "siyuan_token": "",
+  "request_timeout": 30,
+  "obsidian_attachments_folder": "attachments",
+  "joplin_default_notebook": "Note Sync Hub",
+  "siyuan_default_notebook": "Note Sync Hub"
+}

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "note-sync-hub"
+version = "0.1.0"
+description = "Safe desktop synchronization hub for Joplin, Obsidian, and SiYuan."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+authors = [
+    { name = "xing-skyline" }
+]
+keywords = ["joplin", "obsidian", "siyuan", "sync", "notes", "markdown"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28",
+    "pyyaml>=6",
+]
+
+[project.scripts]
+note-sync-hub = "note_sync_hub.gui:main"
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6"]
+
+[tool.setuptools]
+packages = ["note_sync_hub", "note_sync_hub.adapters"]
+
