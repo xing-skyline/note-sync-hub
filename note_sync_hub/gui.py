@@ -377,12 +377,15 @@ class SyncApp(tk.Tk):
         }
         self.mode_var = tk.StringVar(value=next(iter(MODE_LABELS)))
         self.source_var = tk.StringVar(value=Endpoint.JOPLIN.label)
+        self.primary_var = tk.StringVar(value=Endpoint.JOPLIN.label)
         self._last_source_endpoint: Optional[Endpoint] = Endpoint.JOPLIN
         self.scope_var = tk.StringVar(value="all")
         self.target_mode_var = tk.StringVar(value=next(iter(TARGET_MODE_LABELS)))
         self.target_folder_vars = {endpoint: tk.StringVar() for endpoint in Endpoint}
         self.include_subfolders_var = tk.BooleanVar(value=True)
         self.propagate_deletions_var = tk.BooleanVar(value=False)
+        self.delete_text_var = tk.StringVar()
+        self.delete_hint_var = tk.StringVar()
         self.status_var = tk.StringVar(value="请先确认三端连接设置，然后测试连接并刷新目录。")
         self.progress_text_var = tk.StringVar(value="就绪")
 
@@ -475,9 +478,18 @@ class SyncApp(tk.Tk):
             self.target_endpoint_checks[endpoint] = check
         ttk.Label(
             direction_line,
-            text="可选择一个目标，也可同时选择两个目标。",
+            text="目标可多选",
             style="Subtitle.TLabel",
         ).pack(side="left", padx=(6, 0))
+        ttk.Separator(direction_line, orient="vertical").pack(side="left", fill="y", padx=12)
+        ttk.Label(direction_line, text="双向主端：").pack(side="left")
+        self.primary_combo = ttk.Combobox(
+            direction_line,
+            textvariable=self.primary_var,
+            state="disabled",
+            width=12,
+        )
+        self.primary_combo.pack(side="left")
 
         line2 = ttk.Frame(options)
         line2.pack(fill="x", pady=(7, 0))
@@ -511,13 +523,13 @@ class SyncApp(tk.Tk):
         line3.pack(fill="x", pady=(7, 0))
         self.delete_check = ttk.Checkbutton(
             line3,
-            text="将来源端的删除同步到其他端（危险，默认关闭）",
+            textvariable=self.delete_text_var,
             variable=self.propagate_deletions_var,
         )
         self.delete_check.pack(side="left")
         ttk.Label(
             line3,
-            text="开启后：Joplin 进入废纸篓，Obsidian 进入 Windows 回收站；第一版不会自动删除思源文档。",
+            textvariable=self.delete_hint_var,
             foreground="#9a5b00",
         ).pack(side="left", padx=(12, 0))
 
@@ -645,6 +657,10 @@ class SyncApp(tk.Tk):
         self.target_mode_combo.configure(state="readonly" if mapping else "disabled")
         selected_mode = TARGET_MODE_LABELS[self.target_mode_var.get()] == TargetMode.SELECTED
         source = next((endpoint for endpoint in enabled_endpoints if endpoint.label == self.source_var.get()), None)
+        self.primary_combo.configure(values=values)
+        if self.primary_var.get() not in values and values:
+            self.primary_var.set(values[0])
+        self.primary_combo.configure(state="disabled" if one_way or not values else "readonly")
         if one_way and source != self._last_source_endpoint:
             if self._last_source_endpoint in enabled_endpoints:
                 self.target_endpoint_vars[self._last_source_endpoint].set(True)
@@ -655,6 +671,12 @@ class SyncApp(tk.Tk):
                 check.configure(state="disabled")
             else:
                 check.configure(state="normal" if one_way else "disabled")
+        if one_way:
+            self.delete_text_var.set("将来源端的删除同步到目标端（危险，默认关闭）")
+            self.delete_hint_var.set("开启后使用废纸篓/回收站；思源不会自动删除。")
+        else:
+            self.delete_text_var.set("将双向主端的删除同步到其他端（危险，默认关闭）")
+            self.delete_hint_var.set("非主端删除会从主端恢复；思源不会自动删除。")
         endpoints = self._sync_endpoints()
 
         for endpoint, listbox in self.folder_lists.items():
@@ -688,11 +710,17 @@ class SyncApp(tk.Tk):
             if mode == SyncMode.ONE_WAY
             else None
         )
+        primary = (
+            next((endpoint for endpoint in endpoints if endpoint.label == self.primary_var.get()), None)
+            if mode == SyncMode.BIDIRECTIONAL
+            else None
+        )
         selected_folders = {endpoint: self._selected_folders(endpoint) for endpoint in endpoints}
         options = SyncOptions(
             mode=mode,
             endpoints=endpoints,
             source=source,
+            primary=primary,
             scope_all=self.scope_var.get() == "all",
             selected_folders=selected_folders,
             include_subfolders=self.include_subfolders_var.get(),
@@ -857,7 +885,11 @@ class SyncApp(tk.Tk):
             )
             return
 
-        versions = sorted(operation.versions.values(), key=lambda note: note.endpoint.value)
+        primary = self.plan.options.primary
+        versions = sorted(
+            operation.versions.values(),
+            key=lambda note: (0 if note.endpoint == primary else 1, note.endpoint.value),
+        )
         if not versions:
             return
         if len(versions) == 1:

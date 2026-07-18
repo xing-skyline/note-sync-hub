@@ -307,6 +307,97 @@ class EnginePlannerTests(unittest.TestCase):
         self.assertEqual([item.action for item in operations], [OperationAction.DELETE, OperationAction.SKIP])
         self.assertEqual(operations[0].targets, (Endpoint.OBSIDIAN,))
 
+    def test_bidirectional_non_primary_deletion_is_restored_from_primary(self):
+        global_id = "restore-secondary"
+        old_j = make_note(Endpoint.JOPLIN, native_id="j", global_id=global_id)
+        old_o = make_note(Endpoint.OBSIDIAN, native_id="o", global_id=global_id)
+        engine, _adapters, _state = self.engine(
+            {Endpoint.OBSIDIAN: [old_o]},
+            {global_id: state_record(old_j, old_o)},
+        )
+        operation = engine.preview(SyncOptions(
+            mode=SyncMode.BIDIRECTIONAL,
+            endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN),
+            primary=Endpoint.OBSIDIAN,
+            propagate_deletions=True,
+        )).operations[0]
+        self.assertEqual(operation.action, OperationAction.CREATE)
+        self.assertEqual(operation.source, Endpoint.OBSIDIAN)
+        self.assertEqual(operation.targets, (Endpoint.JOPLIN,))
+        self.assertIn("非主端", operation.reason)
+
+    def test_bidirectional_primary_deletion_can_propagate(self):
+        global_id = "delete-from-primary"
+        old_j = make_note(Endpoint.JOPLIN, native_id="j", global_id=global_id)
+        current_o = make_note(Endpoint.OBSIDIAN, native_id="o", global_id=global_id)
+        current_s = make_note(Endpoint.SIYUAN, native_id="s", global_id=global_id)
+        engine, _adapters, _state = self.engine(
+            {Endpoint.OBSIDIAN: [current_o], Endpoint.SIYUAN: [current_s]},
+            {global_id: state_record(old_j, current_o, current_s)},
+        )
+        operations = engine.preview(SyncOptions(
+            mode=SyncMode.BIDIRECTIONAL,
+            endpoints=tuple(Endpoint),
+            primary=Endpoint.JOPLIN,
+            propagate_deletions=True,
+        )).operations
+        self.assertEqual([item.action for item in operations], [OperationAction.DELETE, OperationAction.SKIP])
+        self.assertEqual(operations[0].targets, (Endpoint.OBSIDIAN,))
+        self.assertIn("主端 Joplin", operations[0].reason)
+
+    def test_bidirectional_primary_deletion_is_retained_when_delete_is_off(self):
+        global_id = "keep-after-primary-delete"
+        old_j = make_note(Endpoint.JOPLIN, native_id="j", global_id=global_id)
+        current_o = make_note(Endpoint.OBSIDIAN, native_id="o", global_id=global_id)
+        engine, _adapters, _state = self.engine(
+            {Endpoint.OBSIDIAN: [current_o]},
+            {global_id: state_record(old_j, current_o)},
+        )
+        operation = engine.preview(SyncOptions(
+            mode=SyncMode.BIDIRECTIONAL,
+            endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN),
+            primary=Endpoint.JOPLIN,
+        )).operations[0]
+        self.assertEqual(operation.action, OperationAction.SKIP)
+        self.assertIn("主端 Joplin", operation.reason)
+
+    def test_non_primary_edit_propagates_while_another_secondary_is_restored(self):
+        global_id = "edit-and-restore"
+        old_j = make_note(Endpoint.JOPLIN, native_id="j", global_id=global_id)
+        old_o = make_note(Endpoint.OBSIDIAN, native_id="o", global_id=global_id)
+        old_s = make_note(Endpoint.SIYUAN, native_id="s", global_id=global_id)
+        changed_o = replace(old_o, body="Obsidian 修改\n", revision="2", updated=2)
+        engine, _adapters, _state = self.engine(
+            {Endpoint.JOPLIN: [old_j], Endpoint.OBSIDIAN: [changed_o]},
+            {global_id: state_record(old_j, old_o, old_s)},
+        )
+        operation = engine.preview(SyncOptions(
+            mode=SyncMode.BIDIRECTIONAL,
+            endpoints=tuple(Endpoint),
+            primary=Endpoint.JOPLIN,
+        )).operations[0]
+        self.assertEqual(operation.source, Endpoint.OBSIDIAN)
+        self.assertEqual(set(operation.targets), {Endpoint.JOPLIN, Endpoint.SIYUAN})
+        self.assertIn("非主端删除", operation.reason)
+
+    def test_primary_deletion_plus_secondary_edit_remains_conflict(self):
+        global_id = "delete-edit-conflict"
+        old_j = make_note(Endpoint.JOPLIN, native_id="j", global_id=global_id)
+        old_o = make_note(Endpoint.OBSIDIAN, native_id="o", global_id=global_id)
+        changed_o = replace(old_o, body="仍需保留的修改\n", revision="2")
+        engine, _adapters, _state = self.engine(
+            {Endpoint.OBSIDIAN: [changed_o]},
+            {global_id: state_record(old_j, old_o)},
+        )
+        operation = engine.preview(SyncOptions(
+            mode=SyncMode.BIDIRECTIONAL,
+            endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN),
+            primary=Endpoint.JOPLIN,
+            propagate_deletions=True,
+        )).operations[0]
+        self.assertEqual(operation.action, OperationAction.CONFLICT)
+        self.assertIn("主端 Joplin 已删除", operation.reason)
+
     def test_attachment_issue_blocks_source_write(self):
         source = make_note(Endpoint.OBSIDIAN, native_id="o1")
         source.native["attachment_issues"] = ["找不到附件 image.png"]

@@ -524,6 +524,17 @@ class SyncEngine:
         record: Optional[Dict[str, object]],
         options: SyncOptions,
     ) -> List[SyncOperation]:
+        primary = options.primary
+        if primary is None:
+            raise SyncEngineError("双向同步缺少主端。")
+
+        def preferred_version(candidates: Iterable[Endpoint]) -> Tuple[Endpoint, Note]:
+            available = [endpoint for endpoint in candidates if endpoint in versions]
+            if primary in available:
+                return primary, versions[primary]
+            endpoint = max(available, key=lambda item: (versions[item].updated, item.value))
+            return endpoint, versions[endpoint]
+
         endpoint_records = {endpoint: self._record_for(record, endpoint) for endpoint in options.endpoints}
         if not any(options.includes_note(note) for note in versions.values()) and not any(
             self._record_in_scope(options, endpoint, endpoint_records[endpoint])
@@ -539,7 +550,10 @@ class SyncEngine:
                     action=OperationAction.CONFLICT,
                     title=next(iter(versions.values())).title,
                     versions=versions,
-                    reason=f"至少一端存在无法确认的附件，已停止自动覆盖：{attachment_problem}",
+                    reason=(
+                        f"至少一端存在无法确认的附件，已停止自动覆盖：{attachment_problem}。"
+                        f"双向主端为 {primary.label}。"
+                    ),
                     state_record=record,
                 )
             ]
@@ -564,8 +578,11 @@ class SyncEngine:
             for endpoint in versions
             if not endpoint_records[endpoint]
         ]
+        primary_deleted = primary in deleted
+        secondary_deleted = [endpoint for endpoint in deleted if endpoint != primary]
+        missing_targets = list(dict.fromkeys([*secondary_deleted, *never_created]))
 
-        if deleted:
+        if primary_deleted:
             if not versions:
                 return []
             if changed:
@@ -576,11 +593,9 @@ class SyncEngine:
                         title=next(iter(versions.values())).title,
                         versions=versions,
                         reason=(
-                            "一端发生删除，同时另一端又有修改：删除端为 "
-                            + "、".join(item.label for item in deleted)
-                            + "；修改端为 "
+                            f"主端 {primary.label} 已删除，同时其他端又有修改：修改端为 "
                             + "、".join(item.label for item in changed)
-                            + "。请人工选择保留内容或确认删除。"
+                            + "。为避免数据丢失，不会自动删除；可在冲突窗口选择现存内容并恢复主端。"
                         ),
                         state_record=record,
                     )
@@ -594,7 +609,10 @@ class SyncEngine:
                         title=next(iter(versions.values())).title,
                         versions=versions,
                         targets=current_targets,
-                        reason="检测到一端删除；“传播删除”未开启，其他端全部保留。",
+                        reason=(
+                            f"检测到主端 {primary.label} 删除；“将主端删除同步到其他端”未开启，"
+                            "其他端全部保留。"
+                        ),
                         state_record=record,
                     )
                 ]
@@ -608,7 +626,7 @@ class SyncEngine:
                         title=next(iter(versions.values())).title,
                         versions=versions,
                         targets=safe_targets,
-                        reason="所选端中的删除将传播到仍存在的安全目标端。",
+                        reason=f"主端 {primary.label} 的删除将传播到仍存在的安全目标端。",
                         state_record=record,
                     )
                 )
@@ -638,10 +656,13 @@ class SyncEngine:
                         action=OperationAction.CONFLICT,
                         title=next(iter(versions.values())).title,
                         versions=versions,
-                        reason="首次配对时发现同路径内容不同。为避免覆盖，请先比较并选择保留版本。",
+                        reason=(
+                            "首次配对时发现同路径内容不同。为避免覆盖，请先比较并选择保留版本；"
+                            f"{primary.label} 将作为默认参考。"
+                        ),
                     )
                 ]
-            source_endpoint, source = max(versions.items(), key=lambda item: (item[1].updated, item[0].value))
+            source_endpoint, source = preferred_version(versions)
             targets = tuple(endpoint for endpoint in options.endpoints if endpoint not in versions)
             if targets:
                 return [
@@ -686,7 +707,10 @@ class SyncEngine:
                         action=OperationAction.CONFLICT,
                         title=next(iter(versions.values())).title,
                         versions=versions,
-                        reason="多个笔记端在上次同步后分别发生了不同修改，请比较后选择同步方式。",
+                        reason=(
+                            "多个笔记端在上次同步后分别发生了不同修改，请比较后选择同步方式；"
+                            f"{primary.label} 将作为默认参考。"
+                        ),
                         state_record=record,
                     )
                 ]
@@ -705,20 +729,40 @@ class SyncEngine:
                         state_record=record,
                     )
                 ]
-            return [
-                SyncOperation(
-                    global_id=global_id,
-                    action=OperationAction.LINK,
-                    title=next(iter(versions.values())).title,
-                    versions=versions,
-                    reason="新出现的关联副本内容一致，更新同步状态。",
-                    state_record=record,
-                )
-            ]
+            if not missing_targets:
+                return [
+                    SyncOperation(
+                        global_id=global_id,
+                        action=OperationAction.LINK,
+                        title=next(iter(versions.values())).title,
+                        versions=versions,
+                        reason="新出现的关联副本内容一致，更新同步状态。",
+                        state_record=record,
+                    )
+                ]
 
         if changed:
-            source_endpoint = max(changed, key=lambda endpoint: (versions[endpoint].updated, endpoint.value))
-            source = versions[source_endpoint]
+            source_endpoint, source = preferred_version(changed)
+            incompatible_new = [
+                endpoint
+                for endpoint in newly_present
+                if versions[endpoint].content_signature != source.content_signature
+                or versions[endpoint].title != source.title
+            ]
+            if incompatible_new:
+                return [
+                    SyncOperation(
+                        global_id=global_id,
+                        action=OperationAction.CONFLICT,
+                        title=source.title,
+                        versions=versions,
+                        reason=(
+                            "已有端发生修改，同时新出现的关联副本内容不同，请先比较；"
+                            f"{primary.label} 将作为默认参考。"
+                        ),
+                        state_record=record,
+                    )
+                ]
             targets = tuple(endpoint for endpoint in options.endpoints if endpoint != source_endpoint)
             target_folders = {
                 target: self._desired_target_folder(options, source, target, versions.get(target), record)
@@ -743,7 +787,14 @@ class SyncEngine:
                         source=source_endpoint,
                         targets=relevant_targets,
                         target_folders={target: target_folders[target] for target in relevant_targets},
-                        reason=f"仅 {source_endpoint.label} 在上次同步后发生变化，将传播到其他所选端。",
+                        reason=(
+                            f"仅 {source_endpoint.label} 在上次同步后发生变化，将传播到其他所选端。"
+                            + (
+                                "检测到非主端删除，缺失副本也会按主端规则恢复。"
+                                if secondary_deleted
+                                else ""
+                            )
+                        ),
                         state_record=record,
                     )
                 ]
@@ -758,9 +809,17 @@ class SyncEngine:
                 )
             ]
 
-        if never_created and versions:
-            source_endpoint, source = max(versions.items(), key=lambda item: (item[1].updated, item[0].value))
-            targets = tuple(never_created)
+        if missing_targets and versions:
+            source_endpoint, source = preferred_version(versions)
+            targets = tuple(missing_targets)
+            if secondary_deleted:
+                reference = primary.label if primary in versions else source_endpoint.label
+                reason = (
+                    f"非主端（{'、'.join(item.label for item in secondary_deleted)}）删除或缺失，"
+                    f"将从参考端 {reference} 恢复；新加入的端同时补建副本。"
+                )
+            else:
+                reason = "为后来加入同步范围的笔记端补建副本。"
             return [
                 SyncOperation(
                     global_id=global_id,
@@ -773,7 +832,7 @@ class SyncEngine:
                         target: self.adapters[target].normalize_target_folder(source.folder)
                         for target in targets
                     },
-                    reason="为后来加入同步范围的笔记端补建副本。",
+                    reason=reason,
                     state_record=record,
                 )
             ]

@@ -164,6 +164,7 @@ class SyncOptions:
     mode: SyncMode
     endpoints: Tuple[Endpoint, ...]
     source: Optional[Endpoint] = None
+    primary: Optional[Endpoint] = None
     scope_all: bool = True
     selected_folders: Dict[Endpoint, Tuple[str, ...]] = field(default_factory=dict)
     include_subfolders: bool = True
@@ -188,8 +189,15 @@ class SyncOptions:
                 raise ValueError("单向同步必须选择一个来源端。")
             if not self.targets:
                 raise ValueError("单向同步必须至少选择一个目标端。")
+            if self.primary is not None:
+                raise ValueError("单向同步不应指定双向主端。")
         elif self.source is not None:
             raise ValueError("双向同步不应指定固定来源端。")
+        elif self.primary is None:
+            # 保留对早期配置/调用方的兼容；桌面界面始终要求用户明确显示主端。
+            self.primary = unique[0]
+        elif self.primary not in unique:
+            raise ValueError("双向同步必须从参与端中选择一个主端。")
 
         if not self.scope_all:
             required = (self.source,) if self.mode == SyncMode.ONE_WAY else unique
