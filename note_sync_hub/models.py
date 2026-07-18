@@ -48,6 +48,18 @@ class SyncMode(str, Enum):
         }[self]
 
 
+class ConflictPolicy(str, Enum):
+    MANUAL = "manual"
+    LATEST = "latest"
+
+    @property
+    def label(self) -> str:
+        return {
+            self.MANUAL: "手动比较",
+            self.LATEST: "自动采用最后修改时间最新的版本",
+        }[self]
+
+
 class TargetMode(str, Enum):
     PRESERVE = "preserve"
     SELECTED = "selected"
@@ -171,6 +183,7 @@ class SyncOptions:
     target_mode: TargetMode = TargetMode.PRESERVE
     target_folders: Dict[Endpoint, str] = field(default_factory=dict)
     propagate_deletions: bool = False
+    conflict_policy: ConflictPolicy = ConflictPolicy.MANUAL
 
     @property
     def targets(self) -> Tuple[Endpoint, ...]:
@@ -194,10 +207,16 @@ class SyncOptions:
         elif self.source is not None:
             raise ValueError("双向同步不应指定固定来源端。")
         elif self.primary is None:
-            # 保留对早期配置/调用方的兼容；桌面界面始终要求用户明确显示主端。
+            # 保留对早期配置/调用方的兼容；桌面界面始终要求用户明确选择主端。
             self.primary = unique[0]
         elif self.primary not in unique:
             raise ValueError("双向同步必须从参与端中选择一个主端。")
+
+        if self.conflict_policy == ConflictPolicy.LATEST and (
+            self.mode != SyncMode.BIDIRECTIONAL
+            or set(unique) != {Endpoint.JOPLIN, Endpoint.OBSIDIAN}
+        ):
+            raise ValueError("自动采用最新版本仅适用于 Joplin 与 Obsidian 的双向同步。")
 
         if not self.scope_all:
             required = (self.source,) if self.mode == SyncMode.ONE_WAY else unique

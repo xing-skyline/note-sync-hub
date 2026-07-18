@@ -14,6 +14,7 @@ from .config import AppConfig, load_config, save_config
 from .diffmerge import DiffChoice, NoteDiff, build_note_diff
 from .engine import SyncEngine, SyncEngineError
 from .models import (
+    ConflictPolicy,
     Endpoint,
     Note,
     OperationAction,
@@ -33,6 +34,10 @@ TARGET_MODE_LABELS = {
     "保持来源目录结构": TargetMode.PRESERVE,
     "放入各目标端指定目录": TargetMode.SELECTED,
     "放入各目标端根目录": TargetMode.ROOT,
+}
+CONFLICT_POLICY_LABELS = {
+    "手动比较（最安全）": ConflictPolicy.MANUAL,
+    "自动采用最后修改时间最新的版本（仅 Joplin ↔ Obsidian）": ConflictPolicy.LATEST,
 }
 
 
@@ -378,6 +383,7 @@ class SyncApp(tk.Tk):
         self.mode_var = tk.StringVar(value=next(iter(MODE_LABELS)))
         self.source_var = tk.StringVar(value=Endpoint.JOPLIN.label)
         self.primary_var = tk.StringVar(value=Endpoint.JOPLIN.label)
+        self.conflict_policy_var = tk.StringVar(value=next(iter(CONFLICT_POLICY_LABELS)))
         self._last_source_endpoint: Optional[Endpoint] = Endpoint.JOPLIN
         self.scope_var = tk.StringVar(value="all")
         self.target_mode_var = tk.StringVar(value=next(iter(TARGET_MODE_LABELS)))
@@ -398,7 +404,7 @@ class SyncApp(tk.Tk):
         ttk.Label(header, text="Note Sync Hub", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text="Joplin、Obsidian、思源笔记：先生成只读预览，再执行；多端冲突不会自动覆盖。",
+            text="Joplin、Obsidian、思源笔记：先生成只读预览，再执行；冲突默认不会自动覆盖。",
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(1, 0))
 
@@ -459,6 +465,16 @@ class SyncApp(tk.Tk):
                 variable=self.mode_var,
                 command=self._toggle_options,
             ).pack(side="left", padx=(0, 12))
+        ttk.Separator(line1, orient="vertical").pack(side="left", fill="y", padx=(0, 12))
+        ttk.Label(line1, text="双向冲突：").pack(side="left")
+        self.conflict_policy_combo = ttk.Combobox(
+            line1,
+            textvariable=self.conflict_policy_var,
+            values=list(CONFLICT_POLICY_LABELS),
+            state="disabled",
+            width=46,
+        )
+        self.conflict_policy_combo.pack(side="left")
         direction_line = ttk.Frame(options)
         direction_line.pack(fill="x", pady=(7, 0))
         ttk.Label(direction_line, text="单向来源：").pack(side="left")
@@ -535,11 +551,11 @@ class SyncApp(tk.Tk):
 
         folders = ttk.LabelFrame(root, text="3. 目录范围与单向目标目录", padding=8)
         folders.pack(fill="x", pady=(0, 8))
-        panes = ttk.Panedwindow(folders, orient="horizontal")
-        panes.pack(fill="x")
+        self.folder_panes = ttk.Panedwindow(folders, orient="horizontal")
+        self.folder_panes.pack(fill="x")
         for endpoint in Endpoint:
-            frame = ttk.LabelFrame(panes, text=endpoint.label, padding=6)
-            panes.add(frame, weight=1)
+            frame = ttk.LabelFrame(self.folder_panes, text=endpoint.label, padding=6)
+            self.folder_panes.add(frame, weight=1)
             list_frame = ttk.Frame(frame)
             list_frame.pack(fill="both", expand=True)
             listbox = tk.Listbox(list_frame, height=3, selectmode="extended", exportselection=False)
@@ -559,17 +575,24 @@ class SyncApp(tk.Tk):
             combo.pack(side="left", fill="x", expand=True)
             self.target_folder_combos[endpoint] = combo
 
-        folder_actions = ttk.Frame(folders)
-        folder_actions.pack(fill="x", pady=(7, 0))
-        self.refresh_button = ttk.Button(folder_actions, text="刷新所选端目录", command=self._refresh_folders)
+        self.folder_actions = ttk.Frame(folders)
+        self.folder_actions.pack(fill="x", pady=(7, 0))
+        self.refresh_button = ttk.Button(self.folder_actions, text="刷新所选端目录", command=self._refresh_folders)
         self.refresh_button.pack(side="left")
+        self.folders_collapsed = False
+        self.folder_toggle_button = ttk.Button(
+            self.folder_actions,
+            text="收起目录区",
+            command=self._toggle_folder_panel,
+        )
+        self.folder_toggle_button.pack(side="left", padx=(8, 0))
         ttk.Label(
-            folder_actions,
+            self.folder_actions,
             text="思源的文档也可作为目录；选中文档时会包含该文档本身，勾选子目录后还会包含其子文档。",
             style="Subtitle.TLabel",
         ).pack(side="left", padx=(10, 0))
         self.preview_button = ttk.Button(
-            folder_actions,
+            self.folder_actions,
             text="生成只读同步预览",
             style="Accent.TButton",
             command=self._preview,
@@ -652,6 +675,17 @@ class SyncApp(tk.Tk):
             self.source_var.set(values[0])
         one_way = MODE_LABELS[self.mode_var.get()] == SyncMode.ONE_WAY
         self.source_combo.configure(state="readonly" if one_way and values else "disabled")
+        latest_supported = (
+            not one_way
+            and set(enabled_endpoints) == {Endpoint.JOPLIN, Endpoint.OBSIDIAN}
+        )
+        if not latest_supported:
+            manual_label = next(
+                label for label, policy in CONFLICT_POLICY_LABELS.items()
+                if policy == ConflictPolicy.MANUAL
+            )
+            self.conflict_policy_var.set(manual_label)
+        self.conflict_policy_combo.configure(state="readonly" if latest_supported else "disabled")
         selected_scope = self.scope_var.get() == "selected"
         mapping = one_way and selected_scope
         if not mapping:
@@ -744,6 +778,11 @@ class SyncApp(tk.Tk):
                 if target_mode == TargetMode.SELECTED and endpoint != source
             },
             propagate_deletions=self.propagate_deletions_var.get(),
+            conflict_policy=(
+                CONFLICT_POLICY_LABELS[self.conflict_policy_var.get()]
+                if mode == SyncMode.BIDIRECTIONAL
+                else ConflictPolicy.MANUAL
+            ),
         )
         options.validate()
         return options
@@ -823,6 +862,20 @@ class SyncApp(tk.Tk):
         summary = "；".join(f"{endpoint.label} {len(values)} 个目录" for endpoint, values in folders.items())
         self.status_var.set("目录刷新完成：" + summary)
 
+    def _set_folder_panel_collapsed(self, collapsed: bool) -> None:
+        self.folders_collapsed = collapsed
+        if collapsed:
+            if self.folder_panes.winfo_manager():
+                self.folder_panes.pack_forget()
+            self.folder_toggle_button.configure(text="展开目录区")
+        else:
+            if not self.folder_panes.winfo_manager():
+                self.folder_panes.pack(fill="x", before=self.folder_actions)
+            self.folder_toggle_button.configure(text="收起目录区")
+
+    def _toggle_folder_panel(self) -> None:
+        self._set_folder_panel_collapsed(not self.folders_collapsed)
+
     def _preview(self) -> None:
         try:
             options = self._collect_options()
@@ -844,6 +897,7 @@ class SyncApp(tk.Tk):
         self.plan_config = config.to_dict()
         self.plan_options = plan.options
         self._render_plan()
+        self._set_folder_panel_collapsed(True)
         counts = plan.counts()
         conflict_count = counts.get(OperationAction.CONFLICT.value, 0)
         self.status_var.set(

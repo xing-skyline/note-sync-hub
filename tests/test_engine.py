@@ -9,6 +9,7 @@ from note_sync_hub.adapters.base import AdapterError, NoteAdapter
 from note_sync_hub.config import AppConfig
 from note_sync_hub.engine import SyncEngine, SyncEngineError
 from note_sync_hub.models import (
+    ConflictPolicy,
     Endpoint,
     Note,
     OperationAction,
@@ -204,6 +205,22 @@ class EnginePlannerTests(unittest.TestCase):
         )
         self.assertEqual(engine.preview(options).operations[0].action, OperationAction.CONFLICT)
 
+    def test_first_run_latest_policy_selects_unique_newer_version(self):
+        left = make_note(Endpoint.JOPLIN, native_id="j1", body="J\n", updated=1_700_000_000_000)
+        right = make_note(Endpoint.OBSIDIAN, native_id="o1", body="O\n", updated=1_700_000_001_000)
+        engine, _adapters, _state = self.engine({Endpoint.JOPLIN: [left], Endpoint.OBSIDIAN: [right]})
+
+        operation = engine.preview(SyncOptions(
+            mode=SyncMode.BIDIRECTIONAL,
+            endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN),
+            conflict_policy=ConflictPolicy.LATEST,
+        )).operations[0]
+
+        self.assertEqual(operation.action, OperationAction.UPDATE)
+        self.assertEqual(operation.source, Endpoint.OBSIDIAN)
+        self.assertEqual(operation.targets, (Endpoint.JOPLIN,))
+        self.assertIn("自动采用最新版本", operation.reason)
+
     def test_one_changed_endpoint_propagates_to_other_two(self):
         global_id = "group-1"
         old = [
@@ -237,6 +254,60 @@ class EnginePlannerTests(unittest.TestCase):
             endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN),
         )).operations[0]
         self.assertEqual(operation.action, OperationAction.CONFLICT)
+
+    def test_two_different_changes_latest_policy_selects_newer_endpoint(self):
+        global_id = "latest-wins"
+        old_j = make_note(Endpoint.JOPLIN, native_id="j", global_id=global_id)
+        old_o = make_note(Endpoint.OBSIDIAN, native_id="o", global_id=global_id)
+        new_j = replace(old_j, body="J 改\n", revision="2", updated=1_700_000_001_000)
+        new_o = replace(old_o, body="O 改\n", revision="2", updated=1_700_000_002_000)
+        engine, adapters, _state = self.engine(
+            {Endpoint.JOPLIN: [new_j], Endpoint.OBSIDIAN: [new_o]},
+            {global_id: state_record(old_j, old_o)},
+        )
+
+        plan = engine.preview(SyncOptions(
+            mode=SyncMode.BIDIRECTIONAL,
+            endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN),
+            primary=Endpoint.JOPLIN,
+            conflict_policy=ConflictPolicy.LATEST,
+        ))
+        operation = plan.operations[0]
+
+        self.assertEqual(operation.action, OperationAction.UPDATE)
+        self.assertEqual(operation.source, Endpoint.OBSIDIAN)
+        self.assertEqual(operation.targets, (Endpoint.JOPLIN,))
+        self.assertEqual(engine.execute(plan).errors, [])
+        self.assertEqual(adapters[Endpoint.JOPLIN].notes[0].body, "O 改\n")
+
+    def test_latest_policy_keeps_equal_timestamps_as_conflict(self):
+        global_id = "latest-tie"
+        old_j = make_note(Endpoint.JOPLIN, native_id="j", global_id=global_id)
+        old_o = make_note(Endpoint.OBSIDIAN, native_id="o", global_id=global_id)
+        new_j = replace(old_j, body="J 改\n", revision="2", updated=1_700_000_001_000)
+        new_o = replace(old_o, body="O 改\n", revision="2", updated=1_700_000_001_000)
+        engine, _adapters, _state = self.engine(
+            {Endpoint.JOPLIN: [new_j], Endpoint.OBSIDIAN: [new_o]},
+            {global_id: state_record(old_j, old_o)},
+        )
+
+        operation = engine.preview(SyncOptions(
+            mode=SyncMode.BIDIRECTIONAL,
+            endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN),
+            conflict_policy=ConflictPolicy.LATEST,
+        )).operations[0]
+
+        self.assertEqual(operation.action, OperationAction.CONFLICT)
+        self.assertIn("修改时间相同", operation.reason)
+
+    def test_latest_policy_rejects_three_way_sync(self):
+        options = SyncOptions(
+            mode=SyncMode.BIDIRECTIONAL,
+            endpoints=tuple(Endpoint),
+            conflict_policy=ConflictPolicy.LATEST,
+        )
+        with self.assertRaisesRegex(ValueError, "仅适用于 Joplin 与 Obsidian"):
+            options.validate()
 
     def test_duplicate_global_id_blocks_the_entire_group(self):
         global_id = "duplicate"
@@ -399,6 +470,7 @@ class EnginePlannerTests(unittest.TestCase):
             endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN),
             primary=Endpoint.JOPLIN,
             propagate_deletions=True,
+            conflict_policy=ConflictPolicy.LATEST,
         )).operations[0]
         self.assertEqual(operation.action, OperationAction.CONFLICT)
         self.assertIn("主端 Joplin 已删除", operation.reason)

@@ -10,6 +10,7 @@ from .adapters import JoplinAdapter, NoteAdapter, ObsidianAdapter, SiYuanAdapter
 from .adapters.base import AdapterError
 from .config import AppConfig
 from .models import (
+    ConflictPolicy,
     Endpoint,
     ExecutionResult,
     Note,
@@ -522,6 +523,72 @@ class SyncEngine:
             endpoint = max(available, key=lambda item: (versions[item].updated, item.value))
             return endpoint, versions[endpoint]
 
+        def conflict_or_latest(reason: str) -> List[SyncOperation]:
+            if options.conflict_policy == ConflictPolicy.LATEST:
+                latest_updated = max((note.updated for note in versions.values()), default=0)
+                latest = [
+                    (endpoint, note)
+                    for endpoint, note in versions.items()
+                    if note.updated == latest_updated
+                ]
+                if latest_updated > 0 and len(latest) == 1:
+                    source_endpoint, source = latest[0]
+                    targets = tuple(endpoint for endpoint in options.endpoints if endpoint != source_endpoint)
+                    target_folders = {
+                        target: self._desired_target_folder(
+                            options,
+                            source,
+                            target,
+                            versions.get(target),
+                            record,
+                        )
+                        for target in targets
+                    }
+                    try:
+                        updated_label = datetime.fromtimestamp(
+                            latest_updated / 1000,
+                            tz=timezone.utc,
+                        ).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+                    except (OSError, OverflowError, ValueError):
+                        updated_label = str(latest_updated)
+                    action = (
+                        OperationAction.CREATE
+                        if all(target not in versions for target in targets)
+                        else OperationAction.UPDATE
+                    )
+                    return [
+                        SyncOperation(
+                            global_id=global_id,
+                            action=action,
+                            title=source.title,
+                            versions=versions,
+                            source=source_endpoint,
+                            targets=targets,
+                            target_folders=target_folders,
+                            reason=(
+                                f"{reason} 已按“自动采用最新版本”选择 {source_endpoint.label}："
+                                f"最后修改时间 {updated_label}。该操作仍需在预览中确认后执行。"
+                            ),
+                            state_record=record,
+                        )
+                    ]
+                reason += (
+                    " 已开启自动最新策略，但两端修改时间相同或不可用，仍需人工比较；"
+                    f"{primary.label} 作为默认参考。"
+                )
+            else:
+                reason += f" 请人工比较并选择保留版本；{primary.label} 作为默认参考。"
+            return [
+                SyncOperation(
+                    global_id=global_id,
+                    action=OperationAction.CONFLICT,
+                    title=next(iter(versions.values())).title,
+                    versions=versions,
+                    reason=reason,
+                    state_record=record,
+                )
+            ]
+
         endpoint_records = {endpoint: self._record_for(record, endpoint) for endpoint in options.endpoints}
         if not any(options.includes_note(note) for note in versions.values()) and not any(
             self._record_in_scope(options, endpoint, endpoint_records[endpoint])
@@ -625,18 +692,9 @@ class SyncEngine:
             unique_contents = {note.content_signature for note in versions.values()}
             unique_titles = {note.title for note in versions.values()}
             if len(versions) > 1 and (len(unique_contents) > 1 or len(unique_titles) > 1):
-                return [
-                    SyncOperation(
-                        global_id=global_id,
-                        action=OperationAction.CONFLICT,
-                        title=next(iter(versions.values())).title,
-                        versions=versions,
-                        reason=(
-                            "首次配对时发现同路径内容不同。为避免覆盖，请先比较并选择保留版本；"
-                            f"{primary.label} 将作为默认参考。"
-                        ),
-                    )
-                ]
+                return conflict_or_latest(
+                    "首次配对时发现同路径内容不同。"
+                )
             source_endpoint, source = preferred_version(versions)
             targets = tuple(endpoint for endpoint in options.endpoints if endpoint not in versions)
             if targets:
@@ -676,34 +734,15 @@ class SyncEngine:
             ]
             path_variants = {versions[endpoint].folder for endpoint in path_changes}
             if len(content_variants) > 1 or len(title_variants) > 1 or len(path_variants) > 1:
-                return [
-                    SyncOperation(
-                        global_id=global_id,
-                        action=OperationAction.CONFLICT,
-                        title=next(iter(versions.values())).title,
-                        versions=versions,
-                        reason=(
-                            "多个笔记端在上次同步后分别发生了不同修改，请比较后选择同步方式；"
-                            f"{primary.label} 将作为默认参考。"
-                        ),
-                        state_record=record,
-                    )
-                ]
+                return conflict_or_latest(
+                    "多个笔记端在上次同步后分别发生了不同修改。"
+                )
 
         if not changed and newly_present:
             signatures = {note.content_signature for note in versions.values()}
             titles = {note.title for note in versions.values()}
             if len(signatures) > 1 or len(titles) > 1:
-                return [
-                    SyncOperation(
-                        global_id=global_id,
-                        action=OperationAction.CONFLICT,
-                        title=next(iter(versions.values())).title,
-                        versions=versions,
-                        reason="一个新出现的关联副本与已有同步版本内容不同，请先比较再继续。",
-                        state_record=record,
-                    )
-                ]
+                return conflict_or_latest("一个新出现的关联副本与已有同步版本内容不同。")
             if not missing_targets:
                 return [
                     SyncOperation(
@@ -725,19 +764,9 @@ class SyncEngine:
                 or versions[endpoint].title != source.title
             ]
             if incompatible_new:
-                return [
-                    SyncOperation(
-                        global_id=global_id,
-                        action=OperationAction.CONFLICT,
-                        title=source.title,
-                        versions=versions,
-                        reason=(
-                            "已有端发生修改，同时新出现的关联副本内容不同，请先比较；"
-                            f"{primary.label} 将作为默认参考。"
-                        ),
-                        state_record=record,
-                    )
-                ]
+                return conflict_or_latest(
+                    "已有端发生修改，同时新出现的关联副本内容不同。"
+                )
             targets = tuple(endpoint for endpoint in options.endpoints if endpoint != source_endpoint)
             target_folders = {
                 target: self._desired_target_folder(options, source, target, versions.get(target), record)
