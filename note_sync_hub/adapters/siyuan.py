@@ -388,7 +388,15 @@ class SiYuanAdapter(NoteAdapter):
             matches = self._ids_by_hpath(notebook_id, hpath)
             if matches:
                 candidate = matches[-1]
-                if self._attrs(candidate).get(CONTAINER_ATTR) != "1":
+                candidate_attrs = self._attrs(candidate)
+                candidate_gid = candidate_attrs.get(GLOBAL_ID_ATTR, "")
+                is_container = candidate_attrs.get(CONTAINER_ATTR) == "1"
+                # 认领本工具此前已建、带相同同步 ID 的文档：即便状态曾丢失、
+                # 引擎未能提前配对，也可安全接管并写回，而不是误报为未关联。
+                # 带其他同步 ID 或完全没有标记的文档仍受保护，避免覆盖无关笔记。
+                if not is_container and candidate_gid and candidate_gid != global_id:
+                    raise AdapterError(f"思源目标路径已有其他同步文档：{notebook_name}/{hpath}")
+                if not is_container and not candidate_gid:
                     raise AdapterError(f"思源目标路径已有未关联文档：{notebook_name}/{hpath}")
                 block_id = candidate
                 self._request("/api/block/updateBlock", {"dataType": "markdown", "data": body, "id": block_id})

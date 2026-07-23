@@ -296,10 +296,47 @@ class JoplinAdapter(NoteAdapter):
             if title not in desired and tag_id:
                 self._request("DELETE", f"/tags/{tag_id}/notes/{note_id}")
 
+    def _find_note_by_title(self, parent_id: str, title: str) -> Optional[Tuple[str, str]]:
+        """在指定笔记本中按标题查已有笔记，返回 (note_id, 其同步 ID)。
+
+        用于标识丢失、引擎未能提前配对时的兜底：避免在目标笔记本内
+        因认不出旧笔记而重复创建同名笔记。找不到时返回 None；同名多条
+        时返回 None（交由上层保持原有新建行为，不做有歧义的认领）。
+        """
+        wanted = (title or "").strip().casefold()
+        found: List[Tuple[str, str]] = []
+        for item in self._paged(f"/folders/{parent_id}/notes", "id,title,body"):
+            if str(item.get("title", "") or "").strip().casefold() != wanted:
+                continue
+            metadata = extract_joplin_metadata(str(item.get("body", "") or ""))
+            found.append((str(item.get("id", "")), metadata.global_id if metadata else ""))
+        if len(found) != 1:
+            return None
+        return found[0]
+
     def upsert_note(self, source: Note, existing: Optional[Note], folder: str, global_id: str) -> str:
         body = self._render_body(source, existing, global_id)
         parent_id = self._ensure_notebook(folder)
         payload = {"title": source.title, "body": body, "parent_id": parent_id}
+        if not existing:
+            # 标识丢失、引擎按新建规划时，先看目标笔记本里是否已有同名笔记，
+            # 认领本工具此前建的同步笔记，避免产生重复；带其他同步 ID 或
+            # 完全没有标记的笔记则拒绝覆盖，保护无关笔记。
+            match = self._find_note_by_title(parent_id, source.title)
+            if match:
+                match_id, match_gid = match
+                if match_gid and match_gid != global_id:
+                    raise AdapterError(f"Joplin 目标笔记本已有其他同步笔记：{folder}/{source.title}")
+                if not match_gid:
+                    raise AdapterError(f"Joplin 目标笔记本已有未关联笔记：{folder}/{source.title}")
+                existing = existing or Note(
+                    endpoint=self.endpoint,
+                    native_id=match_id,
+                    global_id=match_gid,
+                    title=source.title,
+                    folder=folder,
+                    body="",
+                )
         if existing:
             self._request(
                 "PUT",

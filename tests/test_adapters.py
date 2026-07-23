@@ -56,6 +56,9 @@ class StubSiYuanAdapter(SiYuanAdapter):
                 "path": "/doc-1.sy",
             }]
         if path == "/api/attr/getBlockAttrs":
+            attrs_by_id = getattr(self, "attrs_by_id", {})
+            if payload.get("id") in attrs_by_id:
+                return attrs_by_id[payload["id"]]
             return {GLOBAL_ID_ATTR: "group-1", TAGS_ATTR: '["工作", "资料"]'}
         if path == "/api/export/exportMdContent":
             return {"hPath": "/Parent/文档", "content": "正文\n\n![图](assets/图.png)\n"}
@@ -165,9 +168,116 @@ class SiYuanAdapterTests(unittest.TestCase):
 
     def test_create_refuses_to_overwrite_an_unrelated_siyuan_document(self):
         adapter = StubSiYuanAdapter()
+        adapter.attrs_by_id = {"occupied": {}}  # 无同步标记的无关文档
         adapter._ids_by_hpath = lambda _notebook, hpath: ["occupied"] if hpath == "Parent/目标笔记" else []
         with self.assertRaisesRegex(AdapterError, "已有未关联文档"):
             adapter.upsert_note(source_note(), None, "Knowledge/Parent", "new-group")
+
+    def test_create_refuses_to_overwrite_a_document_with_a_different_sync_id(self):
+        adapter = StubSiYuanAdapter()
+        adapter.attrs_by_id = {"occupied": {GLOBAL_ID_ATTR: "other-group"}}
+        adapter._ids_by_hpath = lambda _notebook, hpath: ["occupied"] if hpath == "Parent/目标笔记" else []
+        with self.assertRaisesRegex(AdapterError, "已有其他同步文档"):
+            adapter.upsert_note(source_note(), None, "Knowledge/Parent", "new-group")
+
+    def test_create_claims_existing_document_with_matching_sync_id(self):
+        # 状态曾丢失、引擎未提前配对时，撞上的同名文档若带相同同步 ID，
+        # 应被安全接管并更新，而不是误报为未关联。
+        adapter = StubSiYuanAdapter()
+        adapter.attrs_by_id = {"occupied": {GLOBAL_ID_ATTR: "same-group"}}
+        adapter._ids_by_hpath = lambda _notebook, hpath: ["occupied"] if hpath == "Parent/目标笔记" else []
+        block_id = adapter.upsert_note(source_note(), None, "Knowledge/Parent", "same-group")
+        self.assertEqual(block_id, "occupied")
+        self.assertTrue(
+            any(path == "/api/block/updateBlock" and payload.get("id") == "occupied"
+                for path, payload, _binary in adapter.calls),
+            "应更新被认领的既有文档",
+        )
+
+
+class StubJoplinAdapter(JoplinAdapter):
+    """拦截 HTTP，模拟目标笔记本里已有笔记的场景。"""
+
+    def __init__(self, existing_notes):
+        super().__init__(AppConfig(joplin_token="token"))
+        # existing_notes: List[dict(id,title,body)]，代表目标笔记本内现有笔记
+        self._existing_notes = existing_notes
+        self.created = []
+        self.updated = []
+
+    def _ensure_notebook(self, folder):
+        return "notebook-1"
+
+    def _render_body(self, source, existing, global_id):
+        from note_sync_hub.metadata import apply_joplin_metadata, SyncMetadata
+        return apply_joplin_metadata(source.body, SyncMetadata.create(source.endpoint.value, global_id))
+
+    def _sync_tags(self, note_id, tags):
+        return None
+
+    def _paged(self, path, fields):
+        if path == "/folders/notebook-1/notes":
+            yield from self._existing_notes
+            return
+        yield from ()
+
+    def _request(self, method, path, *, json_data=None, **kwargs):
+        class _Resp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        if method == "POST" and path == "/notes":
+            self.created.append(json_data)
+            return _Resp({"id": "new-note-id"})
+        if method == "PUT" and path.startswith("/notes/"):
+            self.updated.append((path.split("/notes/")[1], json_data))
+            return _Resp({"id": path.split("/notes/")[1]})
+        return _Resp({})
+
+
+class JoplinDedupTests(unittest.TestCase):
+    def _existing(self, gid):
+        from note_sync_hub.metadata import apply_joplin_metadata, SyncMetadata
+        body = "正文\n" if gid is None else apply_joplin_metadata(
+            "正文\n", SyncMetadata.create("obsidian", gid)
+        )
+        return [{"id": "occupied", "title": "目标笔记", "body": body}]
+
+    def test_claims_existing_note_with_matching_marker(self):
+        adapter = StubJoplinAdapter(self._existing("same-group"))
+        note = source_note(Endpoint.OBSIDIAN, body="新正文\n")
+        note.title = "目标笔记"
+        note_id = adapter.upsert_note(note, None, "笔记本", "same-group")
+        self.assertEqual(note_id, "occupied")
+        self.assertEqual(adapter.created, [], "认领时不应新建笔记")
+        self.assertEqual([nid for nid, _ in adapter.updated], ["occupied"])
+
+    def test_refuses_note_with_different_marker(self):
+        adapter = StubJoplinAdapter(self._existing("other-group"))
+        note = source_note(Endpoint.OBSIDIAN, body="新正文\n")
+        note.title = "目标笔记"
+        with self.assertRaisesRegex(AdapterError, "已有其他同步笔记"):
+            adapter.upsert_note(note, None, "笔记本", "new-group")
+        self.assertEqual(adapter.created, [])
+
+    def test_refuses_unrelated_note_without_marker(self):
+        adapter = StubJoplinAdapter(self._existing(None))
+        note = source_note(Endpoint.OBSIDIAN, body="新正文\n")
+        note.title = "目标笔记"
+        with self.assertRaisesRegex(AdapterError, "已有未关联笔记"):
+            adapter.upsert_note(note, None, "笔记本", "new-group")
+        self.assertEqual(adapter.created, [])
+
+    def test_creates_new_note_when_no_collision(self):
+        adapter = StubJoplinAdapter([])
+        note = source_note(Endpoint.OBSIDIAN, body="新正文\n")
+        note.title = "全新笔记"
+        note_id = adapter.upsert_note(note, None, "笔记本", "gid")
+        self.assertEqual(note_id, "new-note-id")
+        self.assertEqual(len(adapter.created), 1)
 
 
 class RenderingTests(unittest.TestCase):
