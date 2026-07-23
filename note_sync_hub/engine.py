@@ -185,9 +185,9 @@ class SyncEngine:
             return self.adapters[target].normalize_target_folder(translated)
         return self.adapters[target].normalize_target_folder(new_source)
 
-    @staticmethod
-    def _expected_path_key(source: Note, folder: str) -> str:
-        return normalize_folder("/".join(part for part in (folder, source.title) if part)).casefold()
+    def _expected_path_key(self, source: Note, folder: str, target: Endpoint) -> str:
+        title = self.adapters[target].normalize_target_title(source.title)
+        return normalize_folder("/".join(part for part in (folder, title) if part)).casefold()
 
     def _build_groups(
         self,
@@ -291,6 +291,22 @@ class SyncEngine:
                         index[note.path_key].append(note)
                 target_indexes[target] = index
 
+            # 来源已带同步 ID、但目标写入曾失败时，目标端的同路径未关联笔记
+            # 仍应重新并入原组，避免下一轮继续按“新建”撞上同一文档。
+            for global_id, versions in groups.items():
+                source = versions.get(source_endpoint)
+                if source is None or not options.includes_note(source):
+                    continue
+                for target in options.targets:
+                    if target in versions:
+                        continue
+                    folder = self._mapped_one_way_folder(options, source, target)
+                    candidates = target_indexes[target].get(self._expected_path_key(source, folder, target), [])
+                    candidates = [note for note in candidates if note.native_id not in used[target]]
+                    if len(candidates) == 1 and not candidates[0].global_id:
+                        versions[target] = candidates[0]
+                        used[target].add(candidates[0].native_id)
+
             for source in notes.get(source_endpoint, []):
                 if source.native_id in used[source_endpoint] or not options.includes_note(source):
                     continue
@@ -298,7 +314,7 @@ class SyncEngine:
                 ambiguous = False
                 for target in options.targets:
                     folder = self._mapped_one_way_folder(options, source, target)
-                    candidates = target_indexes[target].get(self._expected_path_key(source, folder), [])
+                    candidates = target_indexes[target].get(self._expected_path_key(source, folder, target), [])
                     candidates = [note for note in candidates if note.native_id not in used[target]]
                     if len(candidates) > 1:
                         ambiguous = True
@@ -459,7 +475,14 @@ class SyncEngine:
                 creates.append(target)
                 continue
             needs_link = needs_link or not current.global_id
-            if current.content_signature != source.content_signature or current.title != source.title:
+            target_title = self.adapters[target].normalize_target_title(source.title)
+            source_unchanged = not self._record_changed(source, source_record)
+            target_record = self._record_for(record, target)
+            target_unchanged = not self._record_changed(current, target_record)
+            equivalent_baseline = bool(source_record and target_record and source_unchanged and target_unchanged)
+            if not equivalent_baseline and (
+                current.content_signature != source.content_signature or current.title != target_title
+            ):
                 content_updates.append(target)
             elif current.folder != target_folders[target]:
                 moves.append(target)

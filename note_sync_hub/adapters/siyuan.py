@@ -100,6 +100,9 @@ class SiYuanAdapter(NoteAdapter):
         notebook, parents = self._split_folder(folder)
         return normalize_folder("/".join([notebook, *(_safe_document_title(part) for part in parents)]))
 
+    def normalize_target_title(self, title: str) -> str:
+        return _safe_document_title(title)
+
     def _load_notebooks(self, refresh: bool = False) -> Dict[str, str]:
         if self._notebooks is None or refresh:
             data = self._request("/api/notebook/lsNotebooks") or {}

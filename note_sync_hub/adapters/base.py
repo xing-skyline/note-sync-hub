@@ -49,3 +49,6 @@ class NoteAdapter(ABC):
 
     def normalize_target_folder(self, folder: str) -> str:
         return normalize_folder(folder)
+
+    def normalize_target_title(self, title: str) -> str:
+        return title

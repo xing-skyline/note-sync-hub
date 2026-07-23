@@ -127,6 +127,15 @@ def state_record(*notes: Note):
     return {"endpoints": endpoints}
 
 
+class NormalizingFakeAdapter(FakeAdapter):
+    def upsert_note(self, source, existing, folder, global_id):
+        native_id = super().upsert_note(source, existing, folder, global_id)
+        written = next(note for note in self.notes if note.native_id == native_id)
+        normalized = replace(written, body=f"# {written.title}\n\n{written.body}")
+        self.notes = [normalized if note.native_id == native_id else note for note in self.notes]
+        return native_id
+
+
 class EnginePlannerTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -501,6 +510,97 @@ class EnginePlannerTests(unittest.TestCase):
         self.assertEqual(len(adapters[Endpoint.SIYUAN].writes), 1)
         self.assertTrue(source.global_id)
         self.assertIn(source.global_id, state.saved)
+
+    def test_one_way_success_converges_when_target_normalizes_written_content(self):
+        source = make_note(Endpoint.OBSIDIAN, native_id="o1", title="规范化", body="正文\n")
+        adapters = {
+            Endpoint.JOPLIN: FakeAdapter(Endpoint.JOPLIN),
+            Endpoint.OBSIDIAN: FakeAdapter(Endpoint.OBSIDIAN, [source]),
+            Endpoint.SIYUAN: NormalizingFakeAdapter(Endpoint.SIYUAN),
+        }
+        state = MemoryState()
+        engine = SyncEngine(self.config, adapters=adapters, state_store=state)
+        options = SyncOptions(
+            mode=SyncMode.ONE_WAY,
+            endpoints=(Endpoint.OBSIDIAN, Endpoint.SIYUAN),
+            source=Endpoint.OBSIDIAN,
+        )
+
+        result = engine.execute(engine.preview(options))
+
+        self.assertEqual(result.errors, [])
+        self.assertEqual(engine.preview(options).operations, [])
+
+    def test_one_way_siyuan_title_normalization_does_not_repeat_update(self):
+        long_title = "长" * 129
+        global_id = "normalized-title"
+        source = make_note(
+            Endpoint.OBSIDIAN, native_id="o1", global_id=global_id, title=long_title, body="正文\n"
+        )
+        target = make_note(
+            Endpoint.SIYUAN, native_id="s1", global_id=global_id, title="长" * 128, body="正文\n"
+        )
+        adapters = {
+            Endpoint.OBSIDIAN: FakeAdapter(Endpoint.OBSIDIAN, [source]),
+            Endpoint.SIYUAN: FakeAdapter(Endpoint.SIYUAN, [target]),
+        }
+        adapters[Endpoint.SIYUAN].normalize_target_title = lambda title: title[:128]
+        engine = SyncEngine(self.config, adapters=adapters, state_store=MemoryState({
+            global_id: state_record(source, target),
+        }))
+        options = SyncOptions(
+            mode=SyncMode.ONE_WAY,
+            endpoints=(Endpoint.OBSIDIAN, Endpoint.SIYUAN),
+            source=Endpoint.OBSIDIAN,
+        )
+
+        self.assertEqual(engine.preview(options).operations, [])
+
+    def test_one_way_updates_when_source_changes_after_normalized_baseline(self):
+        global_id = "normalized-baseline"
+        old_source = make_note(
+            Endpoint.OBSIDIAN, native_id="o1", global_id=global_id, title="规范化", body="旧正文\n"
+        )
+        old_target = make_note(
+            Endpoint.SIYUAN, native_id="s1", global_id=global_id, title="规范化",
+            body="# 规范化\n\n旧正文\n",
+        )
+        changed_source = replace(old_source, body="新正文\n", revision="2")
+        engine, _adapters, _state = self.engine(
+            {Endpoint.OBSIDIAN: [changed_source], Endpoint.SIYUAN: [old_target]},
+            {global_id: state_record(old_source, old_target)},
+        )
+        options = SyncOptions(
+            mode=SyncMode.ONE_WAY,
+            endpoints=(Endpoint.OBSIDIAN, Endpoint.SIYUAN),
+            source=Endpoint.OBSIDIAN,
+        )
+
+        operation = engine.preview(options).operations[0]
+
+        self.assertEqual(operation.action, OperationAction.UPDATE)
+        self.assertEqual(operation.targets, (Endpoint.SIYUAN,))
+
+    def test_one_way_relinks_unmarked_target_when_source_already_has_global_id(self):
+        global_id = "partial-failure"
+        source = make_note(
+            Endpoint.OBSIDIAN, native_id="o1", global_id=global_id, title="已有文档", folder="A"
+        )
+        target = make_note(
+            Endpoint.SIYUAN, native_id="s1", global_id="", title="已有文档", folder="A"
+        )
+        engine, _adapters, _state = self.engine({Endpoint.OBSIDIAN: [source], Endpoint.SIYUAN: [target]})
+        options = SyncOptions(
+            mode=SyncMode.ONE_WAY,
+            endpoints=(Endpoint.OBSIDIAN, Endpoint.SIYUAN),
+            source=Endpoint.OBSIDIAN,
+        )
+
+        operation = engine.preview(options).operations[0]
+
+        self.assertEqual(operation.action, OperationAction.LINK)
+        self.assertEqual(operation.global_id, global_id)
+        self.assertEqual(operation.versions[Endpoint.SIYUAN].native_id, "s1")
 
     def test_execute_rejects_a_stale_preview(self):
         source = make_note(Endpoint.JOPLIN, native_id="j1")
