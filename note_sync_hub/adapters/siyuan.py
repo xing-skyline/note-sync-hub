@@ -211,7 +211,9 @@ class SiYuanAdapter(NoteAdapter):
                 continue
             attrs = self._attrs(block_id)
             body = self._export_markdown(block_id)
-            if attrs.get(CONTAINER_ATTR) == "1" and not body.strip():
+            # 思源导出空文档时也可能生成标题 Markdown，因此不能用正文是否
+            # 为空判断。带容器标记的文档只用于承载目录层级，不是同步笔记。
+            if attrs.get(CONTAINER_ATTR) == "1":
                 continue
 
             notebook = self._notebook_name(str(row.get("box", "")))

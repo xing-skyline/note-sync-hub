@@ -96,6 +96,12 @@ class SiYuanAdapterTests(unittest.TestCase):
         self.assertIn(canonical_asset_uri(digest, "图.png"), note.body)
         self.assertEqual(note.assets[digest].source_ref, "/data/assets/图.png")
 
+    def test_scan_excludes_structural_container_even_when_export_contains_title(self):
+        adapter = StubSiYuanAdapter()
+        adapter.attrs_by_id = {"doc-1": {CONTAINER_ATTR: "1"}}
+
+        self.assertEqual(adapter.list_notes(), [])
+
     def test_create_builds_parent_document_and_sets_sync_attributes(self):
         adapter = StubSiYuanAdapter()
         digest = bytes_sha256(b"asset")

@@ -287,13 +287,22 @@ class SyncEngine:
             for target in options.targets:
                 index: Dict[str, List[Note]] = defaultdict(list)
                 for note in notes.get(target, []):
-                    if note.native_id not in used[target]:
-                        index[note.path_key].append(note)
+                    index[note.path_key].append(note)
                 target_indexes[target] = index
 
+            target_owners: Dict[Endpoint, Dict[str, str]] = {
+                target: {
+                    note.native_id: global_id
+                    for global_id, versions in groups.items()
+                    if (note := versions.get(target)) is not None
+                }
+                for target in options.targets
+            }
+
             # 来源已带同步 ID、但目标写入曾失败时，目标端的同路径未关联笔记
-            # 仍应重新并入原组，避免下一轮继续按“新建”撞上同一文档。
-            for global_id, versions in groups.items():
+            # 仍应重新并入原组。目标若带有一个已经没有来源副本的旧同步 ID，
+            # 也视为可安全接管的孤立副本；若旧组仍有来源笔记则不抢占。
+            for global_id, versions in list(groups.items()):
                 source = versions.get(source_endpoint)
                 if source is None or not options.includes_note(source):
                     continue
@@ -302,10 +311,23 @@ class SyncEngine:
                         continue
                     folder = self._mapped_one_way_folder(options, source, target)
                     candidates = target_indexes[target].get(self._expected_path_key(source, folder, target), [])
-                    candidates = [note for note in candidates if note.native_id not in used[target]]
-                    if len(candidates) == 1 and not candidates[0].global_id:
-                        versions[target] = candidates[0]
-                        used[target].add(candidates[0].native_id)
+                    if len(candidates) != 1:
+                        continue
+                    candidate = candidates[0]
+                    owner_id = target_owners[target].get(candidate.native_id, "")
+                    if owner_id and owner_id != global_id:
+                        owner_versions = groups.get(owner_id)
+                        owner_source = owner_versions.get(source_endpoint) if owner_versions else None
+                        if owner_source is not None and owner_source.native_id != source.native_id:
+                            continue
+                        if owner_versions is not None:
+                            owner_versions.pop(target, None)
+                            if not owner_versions:
+                                groups.pop(owner_id, None)
+                                records.pop(owner_id, None)
+                    versions[target] = candidate
+                    used[target].add(candidate.native_id)
+                    target_owners[target][candidate.native_id] = global_id
 
             for source in notes.get(source_endpoint, []):
                 if source.native_id in used[source_endpoint] or not options.includes_note(source):
@@ -468,13 +490,13 @@ class SyncEngine:
         creates: List[Endpoint] = []
         content_updates: List[Endpoint] = []
         moves: List[Endpoint] = []
-        needs_link = not source.global_id
+        needs_link = source.global_id != global_id
         for target in options.targets:
             current = versions.get(target)
             if current is None:
                 creates.append(target)
                 continue
-            needs_link = needs_link or not current.global_id
+            needs_link = needs_link or current.global_id != global_id
             target_title = self.adapters[target].normalize_target_title(source.title)
             source_unchanged = not self._record_changed(source, source_record)
             target_record = self._record_for(record, target)
@@ -926,6 +948,25 @@ class SyncEngine:
                 }
         return groups
 
+    @staticmethod
+    def _merge_selected_snapshot(
+        previous: Optional[Dict[str, object]],
+        current: Optional[Dict[str, object]],
+        selected: Iterable[Endpoint],
+    ) -> Optional[Dict[str, object]]:
+        merged = dict(previous) if isinstance(previous, dict) else {}
+        endpoints = dict(SyncEngine._record_endpoints(previous))
+        current_endpoints = SyncEngine._record_endpoints(current)
+        for endpoint in selected:
+            endpoints.pop(endpoint.value, None)
+            value = current_endpoints.get(endpoint.value)
+            if isinstance(value, dict):
+                endpoints[endpoint.value] = value
+        if not endpoints:
+            return None
+        merged["endpoints"] = endpoints
+        return merged
+
     def execute(
         self,
         plan: SyncPlan,
@@ -1015,10 +1056,42 @@ class SyncEngine:
         current_snapshot = self._snapshot_state(refreshed)
         final_groups = dict(previous_groups)
         for global_id in successful_ids - failed_ids - blocked_ids:
-            if global_id in current_snapshot:
-                final_groups[global_id] = current_snapshot[global_id]
+            merged = self._merge_selected_snapshot(
+                final_groups.get(global_id),
+                current_snapshot.get(global_id),
+                plan.options.endpoints,
+            )
+            if merged is not None:
+                final_groups[global_id] = merged
             else:
                 final_groups.pop(global_id, None)
+
+            # 同一路径孤立副本被重新关联后，清除旧状态中指向同一原生笔记
+            # 的别名，避免旧同步 ID 在后续扫描中继续干扰分组。
+            current_endpoints = self._record_endpoints(current_snapshot.get(global_id))
+            for stale_id, stale_record in list(final_groups.items()):
+                if stale_id == global_id:
+                    continue
+                stale_endpoints = dict(self._record_endpoints(stale_record))
+                changed = False
+                for endpoint in plan.options.endpoints:
+                    current_record = current_endpoints.get(endpoint.value, {})
+                    stale_endpoint_record = stale_endpoints.get(endpoint.value, {})
+                    current_native_id = str(current_record.get("native_id", ""))
+                    if (
+                        current_native_id
+                        and str(stale_endpoint_record.get("native_id", "")) == current_native_id
+                    ):
+                        stale_endpoints.pop(endpoint.value, None)
+                        changed = True
+                if not changed:
+                    continue
+                if stale_endpoints:
+                    cleaned_record = dict(stale_record)
+                    cleaned_record["endpoints"] = stale_endpoints
+                    final_groups[stale_id] = cleaned_record
+                else:
+                    final_groups.pop(stale_id, None)
         # 第一次同步若只写成了部分目标，仍保存已经落盘的统一 ID，便于
         # 下次准确补写缺失目标；已有组失败时则保留旧基线以继续提示变化。
         for global_id in failed_ids:

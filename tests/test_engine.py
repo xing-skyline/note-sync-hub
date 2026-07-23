@@ -602,6 +602,80 @@ class EnginePlannerTests(unittest.TestCase):
         self.assertEqual(operation.global_id, global_id)
         self.assertEqual(operation.versions[Endpoint.SIYUAN].native_id, "s1")
 
+    def test_one_way_relinks_same_path_target_with_orphaned_old_global_id(self):
+        source = make_note(
+            Endpoint.OBSIDIAN,
+            native_id="o1",
+            global_id="current-group",
+            title="已有周报",
+            folder="工作台/周报",
+        )
+        target = make_note(
+            Endpoint.JOPLIN,
+            native_id="j1",
+            global_id="orphaned-old-group",
+            title="已有周报",
+            folder="工作台/周报",
+        )
+        engine, adapters, state = self.engine(
+            {
+                Endpoint.OBSIDIAN: [source],
+                Endpoint.JOPLIN: [target],
+            },
+            {
+                "current-group": state_record(source),
+                "orphaned-old-group": state_record(target),
+            },
+        )
+        options = SyncOptions(
+            mode=SyncMode.ONE_WAY,
+            endpoints=(Endpoint.OBSIDIAN, Endpoint.JOPLIN),
+            source=Endpoint.OBSIDIAN,
+        )
+
+        plan = engine.preview(options)
+
+        self.assertEqual(len(plan.operations), 1)
+        self.assertEqual(plan.operations[0].action, OperationAction.LINK)
+        self.assertEqual(plan.operations[0].global_id, "current-group")
+        self.assertEqual(plan.operations[0].versions[Endpoint.JOPLIN].native_id, "j1")
+        self.assertEqual(engine.execute(plan).errors, [])
+        self.assertEqual(adapters[Endpoint.JOPLIN].notes[0].global_id, "current-group")
+        self.assertNotIn("orphaned-old-group", state.saved)
+        self.assertEqual(engine.preview(options).operations, [])
+
+    def test_pair_sync_preserves_unselected_endpoint_baseline(self):
+        global_id = "three-endpoint-baseline"
+        old_j = make_note(Endpoint.JOPLIN, native_id="j1", global_id=global_id)
+        old_o = make_note(Endpoint.OBSIDIAN, native_id="o1", global_id=global_id)
+        old_s = make_note(Endpoint.SIYUAN, native_id="s1", global_id=global_id)
+        changed_o = replace(old_o, body="Obsidian 新正文\n", revision="2", updated=2)
+        engine, _adapters, state = self.engine(
+            {
+                Endpoint.JOPLIN: [old_j],
+                Endpoint.OBSIDIAN: [changed_o],
+                Endpoint.SIYUAN: [old_s],
+            },
+            {global_id: state_record(old_j, old_o, old_s)},
+        )
+        options = SyncOptions(
+            mode=SyncMode.ONE_WAY,
+            endpoints=(Endpoint.OBSIDIAN, Endpoint.SIYUAN),
+            source=Endpoint.OBSIDIAN,
+        )
+
+        result = engine.execute(engine.preview(options))
+
+        self.assertEqual(result.errors, [])
+        self.assertEqual(
+            set(state.saved[global_id]["endpoints"]),
+            {Endpoint.JOPLIN.value, Endpoint.OBSIDIAN.value, Endpoint.SIYUAN.value},
+        )
+        self.assertEqual(
+            state.saved[global_id]["endpoints"][Endpoint.JOPLIN.value]["signature"],
+            old_j.content_signature,
+        )
+
     def test_execute_rejects_a_stale_preview(self):
         source = make_note(Endpoint.JOPLIN, native_id="j1")
         engine, adapters, _state = self.engine({Endpoint.JOPLIN: [source]})
