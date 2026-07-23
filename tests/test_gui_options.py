@@ -20,22 +20,6 @@ class StubVar:
         return self.value
 
 
-class StubPackWidget:
-    def __init__(self, manager="pack"):
-        self.manager = manager
-        self.pack_options = None
-
-    def winfo_manager(self):
-        return self.manager
-
-    def pack_forget(self):
-        self.manager = ""
-
-    def pack(self, **options):
-        self.manager = "pack"
-        self.pack_options = options
-
-
 class StubButton:
     def __init__(self):
         self.text = ""
@@ -109,26 +93,6 @@ class SyncOptionCollectionTests(unittest.TestCase):
         options = SyncApp._collect_options(app)
 
         self.assertEqual(options.conflict_policy, ConflictPolicy.LATEST)
-
-    def test_preview_can_collapse_and_restore_folder_panel(self):
-        panes = StubPackWidget()
-        actions = StubPackWidget()
-        button = StubButton()
-        app = SimpleNamespace(
-            folders_collapsed=False,
-            folder_panes=panes,
-            folder_actions=actions,
-            folder_toggle_button=button,
-        )
-
-        SyncApp._set_folder_panel_collapsed(app, True)
-        self.assertEqual(panes.winfo_manager(), "")
-        self.assertEqual(button.text, "展开目录区")
-
-        SyncApp._set_folder_panel_collapsed(app, False)
-        self.assertEqual(panes.winfo_manager(), "pack")
-        self.assertEqual(panes.pack_options["before"], actions)
-        self.assertEqual(button.text, "收起目录区")
 
 
 if __name__ == "__main__":
