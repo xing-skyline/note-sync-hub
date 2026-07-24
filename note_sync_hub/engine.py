@@ -509,13 +509,20 @@ class SyncEngine:
         creates: List[Endpoint] = []
         content_updates: List[Endpoint] = []
         moves: List[Endpoint] = []
-        needs_link = source.global_id != global_id
+        needs_link = (
+            source.global_id != global_id
+            or bool(source.native.get("metadata_needs_repair"))
+        )
         for target in options.targets:
             current = versions.get(target)
             if current is None:
                 creates.append(target)
                 continue
-            needs_link = needs_link or current.global_id != global_id
+            needs_link = (
+                needs_link
+                or current.global_id != global_id
+                or bool(current.native.get("metadata_needs_repair"))
+            )
             target_title = self.adapters[target].normalize_target_title(source.title)
             source_unchanged = not self._record_changed(source, source_record)
             target_record = self._record_for(record, target)
@@ -1041,7 +1048,10 @@ class SyncEngine:
             try:
                 if operation.action == OperationAction.LINK:
                     for endpoint, note in operation.versions.items():
-                        if note.global_id != operation.global_id:
+                        if (
+                            note.global_id != operation.global_id
+                            or bool(note.native.get("metadata_needs_repair"))
+                        ):
                             self.adapters[endpoint].set_global_id(note, operation.global_id)
                 elif operation.action == OperationAction.DELETE:
                     for target in operation.targets:
@@ -1054,7 +1064,10 @@ class SyncEngine:
                         raise SyncEngineError("同步操作缺少已选择的来源版本。")
                     # 先给来源写入统一 ID。即使后续某个目标写入失败，已经成功
                     # 的来源/目标仍能在下次预览中恢复为同一组并安全重试。
-                    if source.endpoint not in operation.targets and source.global_id != operation.global_id:
+                    if source.endpoint not in operation.targets and (
+                        source.global_id != operation.global_id
+                        or bool(source.native.get("metadata_needs_repair"))
+                    ):
                         self.adapters[source.endpoint].set_global_id(source, operation.global_id)
                     for target in operation.targets:
                         existing = operation.versions.get(target)

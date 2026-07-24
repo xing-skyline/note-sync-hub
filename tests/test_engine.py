@@ -105,6 +105,7 @@ class FakeAdapter(NoteAdapter):
     def set_global_id(self, note, global_id):
         note.global_id = global_id
         note.revision += "-linked"
+        note.native.pop("metadata_needs_repair", None)
         self.links.append((note.native_id, global_id))
 
     def move_to_trash(self, note):
@@ -713,6 +714,38 @@ class EnginePlannerTests(unittest.TestCase):
         self.assertEqual(engine.execute(plan).errors, [])
         self.assertEqual(adapters[Endpoint.JOPLIN].notes[0].global_id, "current-group")
         self.assertNotIn("orphaned-old-group", state.saved)
+        self.assertEqual(engine.preview(options).operations, [])
+
+    def test_one_way_repairs_malformed_source_metadata_and_converges(self):
+        global_id = "recoverable-source-id"
+        source = make_note(
+            Endpoint.OBSIDIAN,
+            native_id="o1",
+            global_id=global_id,
+            title="已有笔记",
+        )
+        source.native["metadata_needs_repair"] = True
+        target = make_note(
+            Endpoint.JOPLIN,
+            native_id="j1",
+            global_id=global_id,
+            title="已有笔记",
+        )
+        engine, adapters, _state = self.engine({
+            Endpoint.OBSIDIAN: [source],
+            Endpoint.JOPLIN: [target],
+        })
+        options = SyncOptions(
+            mode=SyncMode.ONE_WAY,
+            endpoints=(Endpoint.OBSIDIAN, Endpoint.JOPLIN),
+            source=Endpoint.OBSIDIAN,
+        )
+
+        plan = engine.preview(options)
+
+        self.assertEqual([operation.action for operation in plan.operations], [OperationAction.LINK])
+        self.assertEqual(engine.execute(plan).errors, [])
+        self.assertEqual(adapters[Endpoint.OBSIDIAN].links, [("o1", global_id)])
         self.assertEqual(engine.preview(options).operations, [])
 
     def test_pair_sync_preserves_unselected_endpoint_baseline(self):

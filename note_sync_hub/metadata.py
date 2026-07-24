@@ -15,6 +15,10 @@ HTML_FIELD_RE = re.compile(
 )
 FRONTMATTER_RE = re.compile(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)", re.DOTALL)
 SYNC_FIELD_RE = re.compile(r"^(?:notesynchub|notebridge)_", re.IGNORECASE)
+SYNC_FRONTMATTER_FIELD_RE = re.compile(
+    r"^(?:notesynchub|notebridge)_(id|sync_time|source|version):[ \t]*(.*?)[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,32 @@ def _frontmatter_mapping(frontmatter: str) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _fallback_sync_values(frontmatter: str) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    for key, raw_value in SYNC_FRONTMATTER_FIELD_RE.findall(frontmatter or ""):
+        try:
+            parsed = yaml.safe_load(raw_value)
+        except yaml.YAMLError:
+            parsed = raw_value
+        if isinstance(parsed, (dict, list)):
+            parsed = raw_value
+        values.setdefault(key.casefold(), str(parsed or ""))
+    return values
+
+
+def _orphan_frontmatter_tags(frontmatter: str) -> List[str]:
+    cleaned = _strip_sync_frontmatter(frontmatter)
+    if not cleaned:
+        return []
+    try:
+        value = yaml.safe_load(cleaned)
+    except yaml.YAMLError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip().lstrip("#") for item in value if str(item).strip().lstrip("#")]
+
+
 def extract_joplin_metadata(content: str) -> Optional[SyncMetadata]:
     values = {key.casefold(): value.strip() for key, value in HTML_FIELD_RE.findall(content or "")}
     global_id = values.get("id", "")
@@ -66,14 +96,44 @@ def extract_joplin_metadata(content: str) -> Optional[SyncMetadata]:
 def extract_obsidian_metadata(content: str) -> Optional[SyncMetadata]:
     frontmatter, _body = split_frontmatter(content)
     values = _frontmatter_mapping(frontmatter)
-    global_id = str(values.get("notesynchub_id") or values.get("notebridge_id") or "")
+    fallback = _fallback_sync_values(frontmatter)
+    global_id = str(
+        values.get("notesynchub_id")
+        or values.get("notebridge_id")
+        or fallback.get("id")
+        or ""
+    )
     if not global_id:
         return None
     return SyncMetadata(
         global_id=global_id,
-        synced_at=str(values.get("notesynchub_sync_time") or values.get("notebridge_sync_time") or ""),
-        source=str(values.get("notesynchub_source") or values.get("notebridge_source") or ""),
-        version=str(values.get("notesynchub_version") or values.get("notebridge_version") or "1"),
+        synced_at=str(
+            values.get("notesynchub_sync_time")
+            or values.get("notebridge_sync_time")
+            or fallback.get("sync_time")
+            or ""
+        ),
+        source=str(
+            values.get("notesynchub_source")
+            or values.get("notebridge_source")
+            or fallback.get("source")
+            or ""
+        ),
+        version=str(
+            values.get("notesynchub_version")
+            or values.get("notebridge_version")
+            or fallback.get("version")
+            or "1"
+        ),
+    )
+
+
+def obsidian_metadata_needs_repair(content: str) -> bool:
+    frontmatter, _body = split_frontmatter(content)
+    return bool(
+        frontmatter
+        and not _frontmatter_mapping(frontmatter)
+        and _fallback_sync_values(frontmatter).get("id")
     )
 
 
@@ -107,6 +167,8 @@ def strip_obsidian_metadata(content: str) -> str:
     frontmatter, body = split_frontmatter(content)
     if not frontmatter:
         return content or ""
+    if _orphan_frontmatter_tags(frontmatter):
+        return body.lstrip("\r\n")
     # tags 已作为 Note.tags 单独比较和同步，不能再留在正文签名中，否则
     # 从 Joplin/思源写入的标签会让 Obsidian 永久显示为“正文有变化”。
     cleaned = _strip_sync_frontmatter(frontmatter, strip_tags=True)
@@ -133,12 +195,16 @@ def apply_obsidian_metadata(
 ) -> str:
     frontmatter, body = split_frontmatter(content)
     cleaned = _strip_sync_frontmatter(frontmatter)
+    orphan_tags = _orphan_frontmatter_tags(frontmatter)
+    if orphan_tags:
+        cleaned = ""
     lines = cleaned.splitlines() if cleaned else []
-    if tags is not None and not any(line.lstrip().startswith("tags:") for line in lines):
-        tag_list = [str(tag).strip() for tag in tags if str(tag).strip()]
-        if tag_list:
-            dumped = yaml.safe_dump(tag_list, allow_unicode=True, default_flow_style=True).strip()
-            lines.append("tags: " + dumped)
+    tag_list = [str(tag).strip() for tag in tags if str(tag).strip()] if tags is not None else []
+    if not tag_list:
+        tag_list = orphan_tags
+    if tag_list and not any(line.lstrip().startswith("tags:") for line in lines):
+        dumped = yaml.safe_dump(tag_list, allow_unicode=True, default_flow_style=True).strip()
+        lines.append("tags: " + dumped)
     lines.extend(
         [
             f"notesynchub_id: {metadata.global_id}",
@@ -157,8 +223,10 @@ def extract_obsidian_tags(content: str) -> List[str]:
         tags = [raw]
     elif isinstance(raw, list):
         tags = [str(value) for value in raw]
+        if not tags:
+            tags = _orphan_frontmatter_tags(frontmatter)
     else:
-        tags = []
+        tags = _orphan_frontmatter_tags(frontmatter)
     tags.extend(re.findall(r"(?<![\w/])#([^\s#.,，。！？!?:：;；]+)", body))
     return list(dict.fromkeys(tag.strip().lstrip("#") for tag in tags if tag.strip().lstrip("#")))
 

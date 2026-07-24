@@ -27,6 +27,7 @@ from ..metadata import (
     apply_obsidian_metadata,
     extract_obsidian_metadata,
     extract_obsidian_tags,
+    obsidian_metadata_needs_repair,
     strip_obsidian_metadata,
 )
 from ..models import Asset, Endpoint, Note, normalize_folder
@@ -275,6 +276,7 @@ class ObsidianAdapter(NoteAdapter):
                         native={
                             "path": path,
                             "raw_body": raw_body,
+                            "metadata_needs_repair": obsidian_metadata_needs_repair(raw_body),
                             "attachment_issues": [issue.message for issue in issues],
                         },
                     )

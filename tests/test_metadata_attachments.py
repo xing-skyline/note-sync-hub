@@ -18,6 +18,7 @@ from note_sync_hub.metadata import (
     apply_obsidian_metadata,
     extract_joplin_metadata,
     extract_obsidian_metadata,
+    extract_obsidian_tags,
     strip_joplin_metadata,
     strip_obsidian_metadata,
 )
@@ -49,6 +50,35 @@ class MetadataTests(unittest.TestCase):
         self.assertNotIn("tags:", canonical)
         self.assertNotIn("notesynchub_", canonical)
         self.assertTrue(canonical.endswith("正文\n"))
+
+    def test_malformed_legacy_frontmatter_recovers_id_tags_and_repairs_on_write(self):
+        malformed = (
+            "---\n"
+            "  - reading\n"
+            "  - productivity\n"
+            "notesynchub_id: recovered-id\n"
+            "notesynchub_sync_time: 'now'\n"
+            "notesynchub_source: obsidian\n"
+            "notesynchub_version: '1'\n"
+            "---\n"
+            "正文\n"
+        )
+
+        metadata = extract_obsidian_metadata(malformed)
+
+        self.assertIsNotNone(metadata)
+        self.assertEqual(metadata.global_id, "recovered-id")
+        self.assertEqual(extract_obsidian_tags(malformed), ["reading", "productivity"])
+        self.assertEqual(strip_obsidian_metadata(malformed), "正文\n")
+        repaired = apply_obsidian_metadata(
+            malformed,
+            SyncMetadata.create("obsidian", "recovered-id"),
+            extract_obsidian_tags(malformed),
+        )
+        self.assertIn("tags: [reading, productivity]", repaired)
+        self.assertNotIn("\n  - reading\n", repaired)
+        self.assertEqual(extract_obsidian_metadata(repaired).global_id, "recovered-id")
+        self.assertEqual(strip_obsidian_metadata(repaired), "正文\n")
 
 
 class AttachmentTests(unittest.TestCase):
