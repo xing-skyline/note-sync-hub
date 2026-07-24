@@ -2,6 +2,8 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location -LiteralPath $projectRoot
+$iconPath = Join-Path $projectRoot 'assets\app-icon.ico'
+$iconImagePath = Join-Path $projectRoot 'assets\app-icon.png'
 
 python -c "import PyInstaller, requests, yaml" 2>$null
 if ($LASTEXITCODE -ne 0) {
@@ -21,6 +23,8 @@ python -m PyInstaller `
     --onefile `
     --windowed `
     --name NoteSyncHub `
+    --icon $iconPath `
+    --add-data "$iconImagePath;assets" `
     --collect-all yaml `
     --specpath build `
     --workpath build\pyinstaller `

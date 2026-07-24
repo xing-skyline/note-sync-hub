@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import ctypes
 import queue
+import sys
 import threading
 import traceback
 from dataclasses import replace
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 import tkinter as tk
@@ -39,6 +41,11 @@ CONFLICT_POLICY_LABELS = {
     "手动比较（最安全）": ConflictPolicy.MANUAL,
     "自动采用最后修改时间最新的版本（仅 Joplin ↔ Obsidian）": ConflictPolicy.LATEST,
 }
+
+
+def _app_icon_path() -> str:
+    base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    return str(base_dir / "assets" / "app-icon.png")
 
 
 def _asset_subset(body: str, *notes: Note) -> Dict[str, object]:
@@ -323,6 +330,11 @@ class AdvancedSettingsDialog(tk.Toplevel):
 class SyncApp(tk.Tk):
     def __init__(self):
         super().__init__()
+        try:
+            self._app_icon = tk.PhotoImage(file=_app_icon_path())
+            self.iconphoto(True, self._app_icon)
+        except (OSError, tk.TclError):
+            self._app_icon = None
         self.title("Note Sync Hub — Joplin / Obsidian / 思源安全同步")
         self.geometry("1440x900")
         self.minsize(1100, 700)
@@ -1225,4 +1237,3 @@ def main() -> None:
     _set_windows_app_id()
     app = SyncApp()
     app.mainloop()
-
