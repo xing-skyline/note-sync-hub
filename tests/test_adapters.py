@@ -83,6 +83,39 @@ class StubSiYuanAdapter(SiYuanAdapter):
 
 
 class SiYuanAdapterTests(unittest.TestCase):
+    def test_document_rows_pages_past_siyuan_default_limit(self):
+        adapter = StubSiYuanAdapter()
+        expected = [
+            {
+                "id": f"doc-{index:03d}",
+                "box": "box-1",
+                "hpath": f"/文档-{index:03d}",
+                "content": f"文档-{index:03d}",
+                "updated": "20260718120000",
+                "ial": "",
+                "path": f"/doc-{index:03d}.sy",
+            }
+            for index in range(300)
+        ]
+        statements = []
+
+        def paged_request(path, payload=None, *, binary=False):
+            self.assertEqual(path, "/api/query/sql")
+            self.assertFalse(binary)
+            statement = payload["stmt"]
+            statements.append(statement)
+            limit = int(statement.split(" LIMIT ", 1)[1].split(" OFFSET ", 1)[0])
+            offset = int(statement.rsplit(" OFFSET ", 1)[1])
+            return expected[offset:offset + limit]
+
+        adapter._request = paged_request
+
+        rows = adapter._document_rows()
+
+        self.assertEqual([row["id"] for row in rows], [row["id"] for row in expected])
+        self.assertEqual(len(statements), 2)
+        self.assertTrue(all("ORDER BY hpath, id" in statement for statement in statements))
+
     def test_scan_reads_hierarchy_tags_and_attachment(self):
         adapter = StubSiYuanAdapter()
         notes = adapter.list_notes()

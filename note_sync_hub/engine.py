@@ -208,6 +208,25 @@ class SyncEngine:
                     endpoint_map[note.global_id].append(note)
             by_global[endpoint] = endpoint_map
 
+        # 旧版思源扫描被接口默认截断后，可能在来源的新路径创建了副本，而旧
+        # 路径副本仍保留相同同步 ID。单向同步有明确来源和目标路径，只有当
+        # 重复副本中恰好一个位于当前期望路径时才安全选中；其他情况仍按冲突
+        # 处理，且这里不会删除或改写未选中的旧副本。
+        if options.mode == SyncMode.ONE_WAY and options.source is not None:
+            source_endpoint = options.source
+            for target in options.targets:
+                for global_id, candidates in list(by_global[target].items()):
+                    if len(candidates) <= 1:
+                        continue
+                    sources = by_global[source_endpoint].get(global_id, [])
+                    if len(sources) != 1 or not options.includes_note(sources[0]):
+                        continue
+                    folder = self._mapped_one_way_folder(options, sources[0], target)
+                    expected_path = self._expected_path_key(sources[0], folder, target)
+                    exact = [note for note in candidates if note.path_key == expected_path]
+                    if len(exact) == 1:
+                        by_global[target][global_id] = exact
+
         duplicate_ids: Set[Tuple[Endpoint, str]] = set()
         for endpoint, endpoint_map in by_global.items():
             for global_id, candidates in endpoint_map.items():

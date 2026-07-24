@@ -335,6 +335,77 @@ class EnginePlannerTests(unittest.TestCase):
         self.assertEqual(plan.operations[0].action, OperationAction.CONFLICT)
         self.assertIn("重复", plan.operations[0].reason)
 
+    def test_one_way_duplicate_target_id_uses_unique_expected_path(self):
+        global_id = "duplicate-target"
+        source = make_note(
+            Endpoint.OBSIDIAN,
+            native_id="o1",
+            global_id=global_id,
+            folder="当前目录",
+            body="来源新正文\n",
+        )
+        expected = make_note(
+            Endpoint.SIYUAN,
+            native_id="s-current",
+            global_id=global_id,
+            folder="当前目录",
+            body="旧正文\n",
+        )
+        stale = make_note(
+            Endpoint.SIYUAN,
+            native_id="s-stale",
+            global_id=global_id,
+            folder="以前目录",
+            body="旧正文\n",
+        )
+        engine, _adapters, _state = self.engine({
+            Endpoint.OBSIDIAN: [source],
+            Endpoint.SIYUAN: [expected, stale],
+        })
+
+        plan = engine.preview(SyncOptions(
+            mode=SyncMode.ONE_WAY,
+            endpoints=(Endpoint.OBSIDIAN, Endpoint.SIYUAN),
+            source=Endpoint.OBSIDIAN,
+        ))
+
+        self.assertEqual([operation.action for operation in plan.operations], [OperationAction.UPDATE])
+        self.assertEqual(plan.operations[0].versions[Endpoint.SIYUAN].native_id, "s-current")
+
+    def test_one_way_duplicate_target_id_without_unique_expected_path_is_conflict(self):
+        global_id = "ambiguous-duplicate-target"
+        source = make_note(
+            Endpoint.OBSIDIAN,
+            native_id="o1",
+            global_id=global_id,
+            folder="当前目录",
+        )
+        first = make_note(
+            Endpoint.SIYUAN,
+            native_id="s1",
+            global_id=global_id,
+            folder="以前目录一",
+        )
+        second = make_note(
+            Endpoint.SIYUAN,
+            native_id="s2",
+            global_id=global_id,
+            folder="以前目录二",
+        )
+        engine, _adapters, _state = self.engine({
+            Endpoint.OBSIDIAN: [source],
+            Endpoint.SIYUAN: [first, second],
+        })
+
+        plan = engine.preview(SyncOptions(
+            mode=SyncMode.ONE_WAY,
+            endpoints=(Endpoint.OBSIDIAN, Endpoint.SIYUAN),
+            source=Endpoint.OBSIDIAN,
+        ))
+
+        self.assertEqual([operation.action for operation in plan.operations], [OperationAction.CONFLICT])
+        self.assertIn("重复", plan.operations[0].reason)
+
     def test_same_simultaneous_change_updates_baseline_without_overwrite(self):
         global_id = "same-change"
         old_j = make_note(Endpoint.JOPLIN, native_id="j", title="旧标题", global_id=global_id)

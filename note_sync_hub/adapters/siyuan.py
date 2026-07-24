@@ -27,6 +27,7 @@ TAGS_ATTR = "custom-notesynchub-tags"
 CONTAINER_ATTR = "custom-notesynchub-container"
 TRASH_CONTAINER_ATTR = "custom-notesynchub-trash-container"
 TRASH_FOLDER_TITLE = "Note Sync Hub 回收站"
+SQL_PAGE_SIZE = 256
 TRASH_FOLDER_BODY = (
     "> 这是 Note Sync Hub 的安全回收站。此目录及其子文档不会参与同步；"
     "需要恢复时，请在思源笔记中将文档手动移出此目录。\n"
@@ -121,12 +122,20 @@ class SiYuanAdapter(NoteAdapter):
         return notebook_id
 
     def _document_rows(self) -> List[Dict[str, Any]]:
-        statement = (
-            "SELECT id, box, hpath, content, updated, ial, path "
-            "FROM blocks WHERE type = 'd' AND box != '' ORDER BY hpath"
-        )
-        rows = self._request("/api/query/sql", {"stmt": statement}) or []
-        return [row for row in rows if isinstance(row, dict)]
+        rows: List[Dict[str, Any]] = []
+        offset = 0
+        while True:
+            statement = (
+                "SELECT id, box, hpath, content, updated, ial, path "
+                "FROM blocks WHERE type = 'd' AND box != '' "
+                f"ORDER BY hpath, id LIMIT {SQL_PAGE_SIZE} OFFSET {offset}"
+            )
+            data = self._request("/api/query/sql", {"stmt": statement}) or []
+            page = [row for row in data if isinstance(row, dict)]
+            rows.extend(page)
+            if len(page) < SQL_PAGE_SIZE:
+                return rows
+            offset += SQL_PAGE_SIZE
 
     @staticmethod
     def _trash_container_ids(rows: List[Dict[str, Any]]) -> set[str]:
