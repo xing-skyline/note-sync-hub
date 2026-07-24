@@ -224,13 +224,29 @@ class SyncEngine:
                     folder = self._mapped_one_way_folder(options, sources[0], target)
                     expected_path = self._expected_path_key(sources[0], folder, target)
                     exact = [note for note in candidates if note.path_key == expected_path]
-                    if len(exact) == 1:
+                    selected = exact
+                    if not exact:
+                        record = previous.get(global_id)
+                        typed_record = record if isinstance(record, dict) else None
+                        source_record = self._record_for(typed_record, source_endpoint)
+                        target_record = self._record_for(typed_record, target)
+                        previous_native_id = str(target_record.get("native_id", ""))
+                        historical = [
+                            note for note in candidates
+                            if previous_native_id and note.native_id == previous_native_id
+                        ]
+                        if (
+                            len(historical) == 1
+                            and self._record_path_changed(sources[0], source_record)
+                        ):
+                            selected = historical
+                    if len(selected) == 1:
                         used[target].update(
                             note.native_id
                             for note in candidates
-                            if note.native_id != exact[0].native_id
+                            if note.native_id != selected[0].native_id
                         )
-                        by_global[target][global_id] = exact
+                        by_global[target][global_id] = selected
 
         duplicate_ids: Set[Tuple[Endpoint, str]] = set()
         for endpoint, endpoint_map in by_global.items():
