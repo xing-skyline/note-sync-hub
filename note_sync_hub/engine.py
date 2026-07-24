@@ -225,6 +225,11 @@ class SyncEngine:
                     expected_path = self._expected_path_key(sources[0], folder, target)
                     exact = [note for note in candidates if note.path_key == expected_path]
                     if len(exact) == 1:
+                        used[target].update(
+                            note.native_id
+                            for note in candidates
+                            if note.native_id != exact[0].native_id
+                        )
                         by_global[target][global_id] = exact
 
         duplicate_ids: Set[Tuple[Endpoint, str]] = set()
@@ -953,25 +958,43 @@ class SyncEngine:
         return current
 
     @staticmethod
-    def _snapshot_state(notes: Dict[Endpoint, List[Note]]) -> Dict[str, Dict[str, object]]:
+    def _snapshot_state(
+        notes: Dict[Endpoint, List[Note]],
+        preferred_native_ids: Optional[Dict[str, Dict[Endpoint, str]]] = None,
+    ) -> Dict[str, Dict[str, object]]:
         groups: Dict[str, Dict[str, object]] = {}
+
+        def save_note(note: Note) -> None:
+            group = groups.setdefault(note.global_id, {"endpoints": {}})
+            endpoints = group["endpoints"]
+            if not isinstance(endpoints, dict):
+                return
+            endpoints[note.endpoint.value] = {
+                "native_id": note.native_id,
+                "title": note.title,
+                "folder": note.folder,
+                "signature": note.content_signature,
+                "revision": note.revision,
+                "updated": note.updated,
+                "locator": note.locator,
+            }
+
         for endpoint, endpoint_notes in notes.items():
             for note in endpoint_notes:
                 if not note.global_id:
                     continue
-                group = groups.setdefault(note.global_id, {"endpoints": {}})
-                endpoints = group["endpoints"]
-                if not isinstance(endpoints, dict):
-                    continue
-                endpoints[endpoint.value] = {
-                    "native_id": note.native_id,
-                    "title": note.title,
-                    "folder": note.folder,
-                    "signature": note.content_signature,
-                    "revision": note.revision,
-                    "updated": note.updated,
-                    "locator": note.locator,
-                }
+                save_note(note)
+
+        if preferred_native_ids:
+            native_indexes = {
+                endpoint: {note.native_id: note for note in endpoint_notes}
+                for endpoint, endpoint_notes in notes.items()
+            }
+            for global_id, endpoint_ids in preferred_native_ids.items():
+                for endpoint, native_id in endpoint_ids.items():
+                    note = native_indexes.get(endpoint, {}).get(native_id)
+                    if note is not None and note.global_id == global_id:
+                        save_note(note)
         return groups
 
     @staticmethod
@@ -1026,6 +1049,7 @@ class SyncEngine:
         total = len(executable)
         cancelled = False
         successful_ids: Set[str] = set()
+        successful_native_ids: Dict[str, Dict[Endpoint, str]] = {}
         failed_ids: Set[str] = set()
         blocked_ids: Set[str] = {
             operation.global_id
@@ -1046,6 +1070,10 @@ class SyncEngine:
             if progress:
                 progress(index - 1, total, f"正在处理：{operation.title}")
             try:
+                operation_native_ids = {
+                    endpoint: note.native_id
+                    for endpoint, note in operation.versions.items()
+                }
                 if operation.action == OperationAction.LINK:
                     for endpoint, note in operation.versions.items():
                         if (
@@ -1072,10 +1100,16 @@ class SyncEngine:
                     for target in operation.targets:
                         existing = operation.versions.get(target)
                         folder = operation.target_folders.get(target, source.folder)
-                        self.adapters[target].upsert_note(source, existing, folder, operation.global_id)
+                        operation_native_ids[target] = self.adapters[target].upsert_note(
+                            source,
+                            existing,
+                            folder,
+                            operation.global_id,
+                        )
                 completed += 1
                 if operation.global_id:
                     successful_ids.add(operation.global_id)
+                    successful_native_ids[operation.global_id] = operation_native_ids
             except (AdapterError, SyncEngineError, OSError, ValueError) as exc:
                 errors.append(f"{operation.title}：{exc}")
                 if operation.global_id:
@@ -1085,7 +1119,7 @@ class SyncEngine:
             message = "同步已取消" if cancelled else "正在保存同步状态……"
             progress(completed, total, message)
         refreshed = self.scan(plan.options.endpoints)
-        current_snapshot = self._snapshot_state(refreshed)
+        current_snapshot = self._snapshot_state(refreshed, successful_native_ids)
         final_groups = dict(previous_groups)
         for global_id in successful_ids - failed_ids - blocked_ids:
             merged = self._merge_selected_snapshot(

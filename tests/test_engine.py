@@ -373,6 +373,62 @@ class EnginePlannerTests(unittest.TestCase):
         self.assertEqual([operation.action for operation in plan.operations], [OperationAction.UPDATE])
         self.assertEqual(plan.operations[0].versions[Endpoint.SIYUAN].native_id, "s-current")
 
+    def test_one_way_duplicate_target_with_stale_baseline_converges(self):
+        global_id = "duplicate-target-stale-baseline"
+        source = make_note(
+            Endpoint.OBSIDIAN,
+            native_id="o1",
+            global_id=global_id,
+            folder="当前目录",
+            body="来源新正文\n",
+        )
+        expected = make_note(
+            Endpoint.SIYUAN,
+            native_id="s-current",
+            global_id=global_id,
+            folder="当前目录",
+            body="旧正文\n",
+        )
+        stale = make_note(
+            Endpoint.SIYUAN,
+            native_id="s-stale",
+            global_id=global_id,
+            folder="以前目录",
+            body="历史副本\n",
+        )
+        adapters = {
+            Endpoint.OBSIDIAN: FakeAdapter(Endpoint.OBSIDIAN, [source]),
+            Endpoint.SIYUAN: NormalizingFakeAdapter(Endpoint.SIYUAN, [expected, stale]),
+        }
+        state = MemoryState({global_id: state_record(source, stale)})
+        engine = SyncEngine(self.config, adapters=adapters, state_store=state)
+        options = SyncOptions(
+            mode=SyncMode.ONE_WAY,
+            endpoints=(Endpoint.OBSIDIAN, Endpoint.SIYUAN),
+            source=Endpoint.OBSIDIAN,
+        )
+
+        first_plan = engine.preview(options)
+
+        self.assertEqual(
+            [operation.action for operation in first_plan.operations],
+            [OperationAction.UPDATE],
+        )
+        self.assertEqual(
+            first_plan.operations[0].versions[Endpoint.SIYUAN].native_id,
+            "s-current",
+        )
+        self.assertEqual(engine.execute(first_plan).errors, [])
+        self.assertEqual(
+            state.saved[global_id]["endpoints"][Endpoint.SIYUAN.value]["native_id"],
+            "s-current",
+        )
+        self.assertEqual(
+            next(note for note in adapters[Endpoint.SIYUAN].notes if note.native_id == "s-stale").body,
+            "历史副本\n",
+        )
+        self.assertEqual(engine.preview(options).operations, [])
+
     def test_one_way_duplicate_target_id_without_unique_expected_path_is_conflict(self):
         global_id = "ambiguous-duplicate-target"
         source = make_note(
