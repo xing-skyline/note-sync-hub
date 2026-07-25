@@ -1,119 +1,174 @@
-# Note Sync Hub
+<div align="center">
+  <img src="assets/app-icon.png" alt="Note Sync Hub 图标" width="128">
+  <h1>Note Sync Hub</h1>
+  <p>在 Joplin、Obsidian 与思源笔记之间安全同步 Markdown 笔记。</p>
+  <p><strong>简体中文</strong> · <a href="README_EN.md">English</a></p>
+  <p>
+    <a href="https://github.com/xing-skyline/note-sync-hub/releases/latest"><img src="https://img.shields.io/github/v/release/xing-skyline/note-sync-hub?display_name=tag&sort=semver" alt="最新版本"></a>
+    <img src="https://img.shields.io/badge/platform-Windows-0078D6?logo=windows" alt="Windows">
+    <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/xing-skyline/note-sync-hub" alt="GPL-3.0 许可证"></a>
+  </p>
+  <p>
+    <a href="https://github.com/xing-skyline/note-sync-hub/releases/latest"><strong>下载 Windows 版</strong></a>
+  </p>
+</div>
 
-一个面向 Windows 桌面的安全笔记同步工具，用图形界面在 **Joplin、Obsidian 和思源笔记**之间同步 Markdown 笔记、目录、标签与引用附件。
+![Note Sync Hub 主界面](assets/screenshot-main.png)
 
-> 当前版本：`0.1.0-alpha`。第一次使用请先备份三个笔记库，并用少量测试笔记验证目录与特殊语法的转换效果。
+## 这是什么
 
-## 主要功能
+Note Sync Hub 是一个本地运行的 Windows 桌面工具。你可以选择任意两个或三个笔记端，在写入前查看完整预览，再决定是否执行同步。
 
-- 任意选择两个或三个笔记端参与同步。
-- 单向同步：明确选择一个来源，并勾选一个或两个目标端。
-- 双向/三端同步：明确选择一个主端；任意端都可新增或修改，主端负责决定删除方向与冲突默认参考。
-- 全部笔记或指定目录同步，可选择是否包含子目录。
-- 单向目录映射：保持来源目录、写入各目标端指定目录，或写入目标根目录。
-- 思源的文档可作为目录选择；选择某个文档时会包含该文档本身，也可包含子文档。
-- 同步前生成只读预览，显示新建、更新、移动、删除、关联、跳过和冲突。
-- 两个或三个版本不同时，可逐差异块选择采用哪一端，或把两份差异都保留；三份不同内容会依次比较。
-- 仅使用 Joplin 与 Obsidian 双向同步时，可选择冲突后手动比较，或自动采用最后修改时间唯一最新的版本；自动选择仍只进入预览，不会立即写入。
-- Joplin Resource、Obsidian 本地附件和思源 `assets` 附件会转换并在目标端重新建立有效链接。
-- Obsidian 的附件目录不会被当作笔记目录扫描。
-- 标签在三端之间同步；同步标记不会显示在正文比较结果中。
-- 执行前再次扫描。只要预览后笔记或附件发生变化，本次执行就会停止并要求重新预览。
-- 执行过程中可以取消；取消会在当前单条笔记完成后停止。
+它适合这些场景：
 
-## 删除安全规则
+- 把 Joplin 笔记迁移或备份到 Obsidian。
+- 在 Obsidian 与思源笔记之间保留一份可读的 Markdown 副本。
+- 让 Joplin、Obsidian、思源笔记共享同一批 Markdown 笔记、标签和附件。
+- 在正式迁移前检查目录映射、冲突和删除影响。
 
-“将来源端/双向主端的删除同步到其他端”默认关闭。
+程序没有云端服务、账号系统或遥测。Joplin 与思源通过你填写的 API 地址连接，Obsidian 直接读写本地 Vault。
 
-- 未开启时：单向来源或双向主端删除后，其他端副本保持不动并在预览中提示。
-- 开启时：Joplin 副本进入 Joplin 废纸篓；Obsidian Markdown 文件进入 Windows 回收站；思源副本移入唯一的 `Note Sync Hub 回收站`。
-- 双向模式只有主端删除才有资格传播删除；非主端删除会从主端恢复。
-- 思源回收站由软件按需创建并带有内部标记；该回收站及其全部子文档不会参与目录列表或笔记扫描，因此不会在下一次同步时被当作正常笔记恢复回来。
-- 第一次需要软删除时，回收站创建在“高级设置”指定的思源默认笔记本顶层。以后无论删除项来自哪个笔记本，都复用这一个回收站；即使将它改名、移动位置或更换默认笔记本，软件仍按内部标记查找原回收站，不会重复创建。
-- 需要恢复思源文档时，在思源中将它手动移出 `Note Sync Hub 回收站`；移出后会重新参加同步。
-- 移动或重命名 Obsidian 笔记时，先写入新位置；成功后旧 Markdown 文件进入 Windows 回收站。
-- 附件文件不会因为删除一条笔记而自动清理，以免误删仍被其他笔记引用的文件。
+> [!WARNING]
+> 当前版本仍处于早期阶段。第一次使用前请备份笔记库，并先用少量测试笔记验证目录、附件和平台专属语法的转换结果。
 
-## 连接准备
+## 功能
 
-### Joplin
+| 能力 | 说明 |
+| --- | --- |
+| 两端或三端同步 | 任意启用 Joplin、Obsidian、思源笔记中的两个或三个端 |
+| 单向同步 | 选择一个来源端和一个或两个目标端 |
+| 双向同步 | 所选端都可新增或修改，并明确指定主端处理删除方向 |
+| 只读预览 | 写入前列出新建、更新、移动、删除、关联、跳过和冲突 |
+| 冲突处理 | 手动逐块比较 Markdown；Joplin 与 Obsidian 还可按唯一最新时间生成预览 |
+| 目录映射 | 保持来源结构、写入指定目标目录，或写入目标根目录 |
+| 标签与附件 | 同步标签，并转换 Joplin Resource、Obsidian 附件和思源 `assets` 链接 |
+| 安全删除 | 删除同步默认关闭；开启后使用各端废纸篓、Windows 回收站或思源托管回收站 |
+| 过期预览保护 | 执行前重新扫描；笔记或附件变化后自动停止，要求重新预览 |
+| 可取消执行 | 在当前单条笔记处理完成后停止后续操作 |
+
+## 工作方式
+
+```mermaid
+flowchart LR
+    J["Joplin<br>Data API"] <--> H["Note Sync Hub"]
+    O["Obsidian<br>本地 Vault"] <--> H
+    S["思源笔记<br>Kernel API"] <--> H
+    H --> P["只读同步预览"]
+    P --> C{"用户确认"}
+    C -->|执行| W["写入所选笔记端"]
+    C -->|取消| X["不修改数据"]
+```
+
+Note Sync Hub 会在笔记中加入同步标记，用于识别同一条笔记在不同应用中的副本。状态文件只保存配对所需的信息；程序不会建立第四份完整笔记库。
+
+## 快速开始
+
+### 1. 下载
+
+打开 [Releases](https://github.com/xing-skyline/note-sync-hub/releases/latest)，下载：
+
+```text
+NoteSyncHub-v1.2.0-windows-x64.exe
+```
+
+程序为单文件 EXE，无需安装。建议同时下载 `SHA256SUMS.txt` 并核对文件哈希。
+
+当前 EXE 没有商业代码签名证书，Windows 可能显示“未知发布者”。请只从本仓库的 Releases 下载；如果你不接受未签名程序，可按下文说明从源码运行。
+
+### 2. 准备笔记端
+
+#### Joplin
 
 1. 打开 Joplin 桌面版。
-2. 进入“工具 → 选项 → Web Clipper”，启用 Web Clipper 服务。
-3. 复制该页面显示的端口和 Authorization Token。
-4. 默认地址通常是 `http://127.0.0.1:41184`；如果 Joplin 显示了其他端口，以 Joplin 为准。
+2. 进入“工具 → 选项 → Web Clipper”。
+3. 启用 Web Clipper 服务，复制端口和 Authorization Token。
+4. 默认地址通常是 `http://127.0.0.1:41184`。
 
-Joplin 官方说明：[Web Clipper](https://joplinapp.org/help/apps/clipper/) · [Data API](https://joplinapp.org/help/api/references/rest_api/)
+参考：[Joplin Web Clipper](https://joplinapp.org/help/apps/clipper/) · [Joplin Data API](https://joplinapp.org/help/api/references/rest_api/)
 
-### Obsidian
+#### Obsidian
 
-选择需要同步的 Vault 根目录。程序直接读取和写入其中的 Markdown 文件，不需要安装 Obsidian 插件。
+选择 Vault 根目录即可，不需要安装 Obsidian 插件。程序默认排除 `.obsidian`、`.trash`、`assets`、`attachments` 和 Obsidian 当前设置的附件目录。
 
-程序会自动排除 `.obsidian`、`.trash`、`assets`、`attachments` 以及 Obsidian 当前设置的附件目录。可在“高级设置”中修改默认附件目录。
-
-### 思源笔记
+#### 思源笔记
 
 1. 启动思源桌面版并打开工作空间。
 2. 进入“设置 → 关于”，复制 API Token。
-3. 本机默认 API 地址是 `http://127.0.0.1:6806`。
+3. 本机默认地址是 `http://127.0.0.1:6806`。
 
-思源官方 Kernel API 说明：[API.md](https://github.com/siyuan-note/siyuan/blob/master/API.md)
+参考：[思源 Kernel API](https://github.com/siyuan-note/siyuan/blob/master/API.md)
 
-## 图形界面使用流程
+### 3. 预览并同步
 
-1. 在连接区启用要使用的笔记端，填写地址、Vault 和 Token。
+1. 启用需要参与同步的笔记端，填写地址、Vault 和 Token。
 2. 点击“测试所选连接”。
 3. 点击“刷新所选端目录”。
-4. 选择单向或双向同步。单向模式明确选择一个来源并勾选一个或两个目标；双向模式使用连接区启用的两端或三端，并明确选择一个主端。仅启用 Joplin 和 Obsidian 时，还可选择“手动比较”或“自动采用最新版本”的冲突策略。
-5. 单向且使用指定范围时，可为每个目标端选择写入目录。
-6. 点击“生成只读同步预览”。这一步不会修改任何笔记。
-7. 对红色冲突项点击“比较并处理所选冲突”，逐块确认内容。
-8. 检查预览后，点击“执行预览中的安全操作”。
+4. 选择单向或双向同步、同步范围、目标目录和冲突策略。
+5. 点击“生成只读同步预览”。
+6. 检查操作列表并处理红色冲突项。
+7. 点击“执行预览中的安全操作”。
 
-窗口默认最大化。生成同步预览后，软件会自动收起目录列表，把纵向空间留给操作明细；需要重新选择目录时点击“展开目录区”。运行日志不占用主窗口空间，需要时点击“查看运行日志”。
+生成预览不会修改任何笔记。执行前程序会重新扫描；只要数据发生变化，本次执行就会停止。
 
-## 目录映射示例
+## 同步规则
 
-来源端选择 `工作/A`，来源笔记位于 `工作/A/子目录/会议记录`，目标端指定目录为 `归档/B`：
+### 单向同步
 
-- “保持来源目录结构” → `工作/A/子目录/会议记录`
-- “放入各目标端指定目录” → `归档/B/A/子目录/会议记录`
-- “放入各目标端根目录” → `A/子目录/会议记录`
+你需要指定一个来源端，再选择一个或两个目标端。目标位置支持三种方式：
 
-思源的第一层目录表示笔记本，后续层级表示父文档。例如写入 `知识库/项目A/资料` 时，`知识库` 是笔记本，`项目A/资料` 是文档层级。目标路径为空时使用“高级设置”中的思源默认笔记本。
+| 方式 | 示例结果 |
+| --- | --- |
+| 保持来源目录结构 | `工作/A/子目录/会议记录` |
+| 放入指定目标目录 | `归档/B/A/子目录/会议记录` |
+| 放入目标根目录 | `A/子目录/会议记录` |
 
-## 冲突处理规则
+### 双向与三端同步
 
-- 冲突策略默认是“手动比较（最安全）”。
-- 仅 Joplin 与 Obsidian 双向同步可选择“自动采用最后修改时间最新的版本”：Joplin 使用 `user_updated_time`，Obsidian 使用 Markdown 文件修改时间，两者均按 Unix 毫秒比较。
-- 只有一端具有唯一的较新时间时才会自动选中；时间相同或不可用时仍保留为冲突。
-- 自动最新只把选中的更新加入只读预览，仍需点击“执行”才会写入；电脑时钟错误或外部工具批量改写文件时间可能造成误判。
-- 删除与修改同时发生、附件异常、重复同步 ID 等高风险冲突不会自动采用最新版本。
-- 双向主端不是固定写入来源：非主端的新增和修改仍能传播到主端及其他端。
-- 主端删除以前同步过的笔记：只有开启删除同步时，才向其他端传播删除。
-- 非主端删除而主端仍保留：从主端恢复缺失副本，不扩散非主端删除。
-- 首次同步遇到同路径但内容不同的笔记：手动策略下标为冲突；Joplin 与 Obsidian 的自动最新策略下，仅在修改时间唯一较新时选中该版本。
-- 上次同步后只有一个笔记端发生变化：从变化端传播到其他所选端。
-- 两个或三个笔记端分别出现不同变化：默认标为冲突；仅 Joplin 与 Obsidian 可按所选的自动最新策略生成更新预览。
-- 主端删除、另一端又修改：标为冲突，不自动决定删除或保留。
-- 缺失附件、Vault 外部附件或同名附件无法唯一确定：标为冲突，不覆盖目标。
-- 重复同步 ID、同一路径多条笔记：必须先在原笔记软件中整理，软件不会猜测配对关系。
+所选端都可以新增或修改笔记。主端用于确定删除传播方向和冲突的默认参考位置，不是固定写入来源。
 
-逐块合并只处理 Markdown 正文。标题、标签和目录由合并窗口中选定的元数据来源决定；主端会排在默认参考位置。合并方案只有在主窗口再次点击“执行”后才会真正写入。
+- 只有一个端发生变化时，程序把该版本传播到其他所选端。
+- 多个端分别修改同一条笔记时，程序标记冲突。
+- 仅 Joplin 与 Obsidian 双向同步支持“按最后修改时间自动选择唯一最新版本”。
+- 自动选择只生成预览，不会跳过用户确认直接写入。
 
-## 附件处理
+### 删除
 
-扫描时，三个适配器都把引用附件转换为基于 SHA-256 的内部引用；写入目标端时再生成目标平台可用的链接：
+“将来源端/双向主端的删除同步到其他端”默认关闭。
 
-- Joplin：创建或复用 Resource，链接形式为 `:/resource-id`。
-- Obsidian：写入 Vault 的附件目录，并生成相对 Markdown 链接。
-- 思源：上传到 `assets`，并生成思源 Markdown 可识别的资源路径。
+- Joplin 副本进入 Joplin 废纸篓。
+- Obsidian Markdown 文件进入 Windows 回收站。
+- 思源副本移入 Note Sync Hub 创建和管理的唯一回收站。
+- 附件不会因删除一条笔记而自动清理，以免误删仍被其他笔记引用的文件。
 
-相同内容的附件会优先复用目标笔记现有资源。软件不会把 Obsidian 的普通 `[[笔记链接]]` 当成附件，也不会扫描附件目录中的 `.md` 文件。
+双向模式下，非主端删除的副本会从主端恢复，不会向其他端传播删除。
+
+## 冲突与附件
+
+### 冲突
+
+手动策略会逐块比较 Markdown 正文。你可以选左侧、右侧或保留两份差异；标题、标签和目录由合并窗口中选定的元数据来源决定。
+
+以下情况不会自动覆盖：
+
+- 删除与修改同时发生。
+- 附件缺失、位于 Vault 外，或同名附件无法唯一确定。
+- 同一路径出现多条笔记，或同一同步 ID 出现重复副本。
+- 三端存在多个不同版本。
+
+### 附件
+
+程序扫描笔记时，会把附件转换为基于 SHA-256 的内部引用；写入目标端时再生成对应平台可用的链接：
+
+- Joplin：创建或复用 Resource。
+- Obsidian：写入 Vault 附件目录并生成相对 Markdown 链接。
+- 思源笔记：上传到 `assets` 并生成思源资源路径。
+
+相同内容的附件会优先复用。普通 Obsidian `[[笔记链接]]` 不会被当成附件。
 
 ## 数据与隐私
 
-程序只连接你填写的本机 Joplin/思源 API 和本地 Obsidian Vault，不包含云服务。配置和同步状态存放在：
+配置和同步状态保存在当前 Windows 用户目录：
 
 ```text
 %APPDATA%\NoteSyncHub\
@@ -121,58 +176,86 @@ Joplin 官方说明：[Web Clipper](https://joplinapp.org/help/apps/clipper/) ·
 └── state\<端点组合哈希>.json
 ```
 
-`config.json` 包含 Joplin 和思源 Token，请不要把它上传到 GitHub 或发给他人。同步状态文件保存笔记 ID、位置和内容摘要，不保存完整正文或附件。
+- `config.json` 包含 Joplin 与思源 Token，采用明文保存，请勿上传或发送给他人。
+- 状态文件保存笔记 ID、标题、目录、定位信息、修改时间和内容哈希，不保存完整正文或附件。
+- 运行日志只保留在当前界面内存中，不写入日志文件；程序会脱敏当前配置中的 Token。
+- 程序没有内置云服务、登录、统计或遥测。
+- `.gitignore` 已排除 `config.json`、构建目录和本地缓存。
+
+## 当前边界
+
+- 这是 Markdown 级同步，不是三个应用内部数据库的完整镜像。
+- Obsidian Dataview、Canvas 和插件私有数据不会完整互转。
+- Joplin 插件字段不会完整互转。
+- 思源数据库、闪卡、块引用、嵌入块等专属能力不能保证无损互转。
+- 不同应用的内部笔记链接语法可能只能作为文本保留。
+- 当前没有后台定时同步。每次同步都需要打开程序、生成预览并确认执行。
+- 当前不会自动清理孤立附件。
 
 ## 从源码运行
 
-要求 Windows、Python 3.10 或更高版本。
+要求 Windows 和 Python 3.10 或更高版本。
 
 ```powershell
-cd D:\Github\note-sync-hub
+git clone https://github.com/xing-skyline/note-sync-hub.git
+cd note-sync-hub
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install -e .
 python NoteSyncHub.pyw
 ```
 
-日常使用不需要命令行；命令只用于首次安装依赖和开发。
-
-## 测试与构建 Windows EXE
+## 测试与构建
 
 ```powershell
 python -m unittest discover -s tests -v
 ruff check note_sync_hub tests
-python -m pip install -e '.[build]'
+python -m pip install -e ".[build]"
 .\build_windows.ps1
 ```
 
-构建产物位于：
+构建产物：
 
 ```text
 dist\NoteSyncHub.exe
 ```
 
-## 当前边界
-
-- 这是 Markdown 级同步，不是三个应用内部数据库的完整镜像。
-- Obsidian Dataview、Canvas、插件私有数据，Joplin 插件字段，以及思源数据库、闪卡、块引用、嵌入块等平台专属能力不能保证无损互转。
-- 思源通过官方 Markdown 导出与块更新 API 读写；含复杂思源专属块的文档应先用副本测试。
-- 普通 Markdown 链接会保留为文本，但不同应用的内部笔记链接语法不一定能在其他应用中直接跳转。
-- 当前不提供后台定时同步；建议每次打开软件，先预览再手动执行。
-- 当前不自动删除孤立附件。
-
-## 项目结构
+项目结构：
 
 ```text
 note_sync_hub/
 ├── adapters/        # Joplin、Obsidian、思源适配器
-├── attachments.py   # 三端附件识别与内部引用
-├── diffmerge.py     # 逐块差异比较
+├── attachments.py   # 附件识别与内部引用
+├── diffmerge.py     # Markdown 逐块差异比较
 ├── engine.py        # 配对、规划、冲突与安全执行
-├── gui.py           # Windows Tkinter 桌面界面
+├── gui.py           # Windows Tkinter 界面
 ├── metadata.py      # 同步标记与标签元数据
-├── models.py        # 统一笔记/操作模型
+├── models.py        # 笔记与操作模型
 └── state.py         # 本地同步基线
 ```
 
+## 常见问题
+
+### 可以只同步两个应用吗？
+
+可以。任意选择 Joplin、Obsidian、思源笔记中的两个端即可。
+
+### 会自动覆盖冲突吗？
+
+默认不会。冲突需要手动处理；Joplin 与 Obsidian 的“自动采用最新版本”也只会生成待确认的预览。
+
+### 可以用作实时或后台同步服务吗？
+
+当前不可以。程序采用“扫描、预览、确认、执行”的手动流程。
+
+### 为什么杀毒软件可能检查 EXE？
+
+EXE 由 PyInstaller 打包且当前未进行商业代码签名。部分安全软件会对新的单文件程序提高警惕。你可以核对 Release 中的 SHA-256，或从源码构建。
+
+## 参与贡献
+
+欢迎提交 [Issue](https://github.com/xing-skyline/note-sync-hub/issues) 或 Pull Request。涉及同步逻辑的改动请附测试，并说明使用的笔记端、同步方向和复现步骤。
+
 ## 许可证
 
-[GNU General Public License v3.0](LICENSE)
+本项目使用 [GNU General Public License v3.0](LICENSE)。

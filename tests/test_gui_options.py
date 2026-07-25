@@ -8,6 +8,7 @@ from note_sync_hub.gui import (
     MODE_LABELS,
     TARGET_MODE_LABELS,
     SyncApp,
+    redact_sensitive_text,
 )
 from note_sync_hub.models import ConflictPolicy, Endpoint, SyncMode, TargetMode
 
@@ -93,6 +94,26 @@ class SyncOptionCollectionTests(unittest.TestCase):
         options = SyncApp._collect_options(app)
 
         self.assertEqual(options.conflict_policy, ConflictPolicy.LATEST)
+
+
+class SensitiveTextRedactionTests(unittest.TestCase):
+    def test_redacts_plain_and_url_encoded_tokens(self):
+        token = "secret token/+value"
+        message = (
+            "plain=secret token/+value "
+            "query=secret+token%2F%2Bvalue "
+            "path=secret%20token%2F%2Bvalue"
+        )
+
+        redacted = redact_sensitive_text(message, token)
+
+        self.assertNotIn("secret token/+value", redacted)
+        self.assertNotIn("secret+token%2F%2Bvalue", redacted)
+        self.assertNotIn("secret%20token%2F%2Bvalue", redacted)
+        self.assertEqual(redacted.count("[已脱敏]"), 3)
+
+    def test_ignores_empty_and_short_values(self):
+        self.assertEqual(redact_sensitive_text("token=abc", "", "abc"), "token=abc")
 
 
 if __name__ == "__main__":

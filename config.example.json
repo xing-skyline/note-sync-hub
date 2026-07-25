@@ -1,7 +1,7 @@
 {
   "joplin_api_base": "http://127.0.0.1:41184",
   "joplin_token": "",
-  "obsidian_vault_path": "D:\\Notes\\MyVault",
+  "obsidian_vault_path": "",
   "siyuan_api_base": "http://127.0.0.1:6806",
   "siyuan_token": "",
   "request_timeout": 30,

@@ -8,6 +8,7 @@ import traceback
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
+from urllib.parse import quote, quote_plus
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -41,6 +42,16 @@ CONFLICT_POLICY_LABELS = {
     "手动比较（最安全）": ConflictPolicy.MANUAL,
     "自动采用最后修改时间最新的版本（仅 Joplin ↔ Obsidian）": ConflictPolicy.LATEST,
 }
+
+
+def redact_sensitive_text(text: str, *secrets: str) -> str:
+    redacted = str(text)
+    for secret in secrets:
+        if not secret or len(secret) < 4:
+            continue
+        for candidate in {secret, quote(secret, safe=""), quote_plus(secret, safe="")}:
+            redacted = redacted.replace(candidate, "[已脱敏]")
+    return redacted
 
 
 def _app_icon_path() -> str:
@@ -380,7 +391,6 @@ class SyncApp(tk.Tk):
         GHOST   = "#e8edf5"
         GHOST_A = "#dbe3ee"
         WARN    = "#b45309"
-        DANGER  = "#b91c1c"
 
         # White card surface everywhere; the gray only peeks at the window edge.
         # Keeping one uniform background avoids gray/white mismatches on the
@@ -1179,8 +1189,9 @@ class SyncApp(tk.Tk):
                     exc, detail = event[1], event[2]
                     self._append_log(detail)
                     title = "同步已停止" if isinstance(exc, SyncEngineError) else "操作失败"
-                    messagebox.showerror(title, str(exc), parent=self)
-                    self.status_var.set(str(exc))
+                    safe_message = self._redact_runtime_secrets(str(exc))
+                    messagebox.showerror(title, safe_message, parent=self)
+                    self.status_var.set(safe_message)
                 elif kind == "finished":
                     self.progress.stop()
                     self.progress.configure(mode="determinate")
@@ -1191,6 +1202,7 @@ class SyncApp(tk.Tk):
         self.after(100, self._drain_events)
 
     def _append_log(self, message: str) -> None:
+        message = self._redact_runtime_secrets(message)
         self.log_messages.append(message.rstrip())
         if len(self.log_messages) > 2000:
             del self.log_messages[:500]
@@ -1199,6 +1211,13 @@ class SyncApp(tk.Tk):
         self.log_text.insert("end", message.rstrip() + "\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def _redact_runtime_secrets(self, text: str) -> str:
+        return redact_sensitive_text(
+            text,
+            self.joplin_token_var.get(),
+            self.siyuan_token_var.get(),
+        )
 
     def _set_busy(self, busy: bool) -> None:
         state = "disabled" if busy else "normal"
@@ -1228,7 +1247,7 @@ class SyncApp(tk.Tk):
 
 def _set_windows_app_id() -> None:
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("xing-skyline.NoteSyncHub")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("NoteSyncHub.App")
     except (AttributeError, OSError):
         pass
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "note-sync-hub"
-version = "0.1.0"
+version = "1.2.0"
 description = "Safe desktop synchronization hub for Joplin, Obsidian, and SiYuan."
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -36,4 +36,3 @@ build = ["pyinstaller>=6"]
 
 [tool.setuptools]
 packages = ["note_sync_hub", "note_sync_hub.adapters"]
-

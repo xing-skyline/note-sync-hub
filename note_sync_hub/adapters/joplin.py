@@ -62,12 +62,12 @@ class JoplinAdapter(NoteAdapter):
                 files=files,
                 timeout=timeout or self.config.request_timeout,
             )
-        except requests.Timeout as exc:
-            raise AdapterError("连接 Joplin 超时，请确认 Joplin 和 Web Clipper 服务正在运行。") from exc
-        except requests.ConnectionError as exc:
-            raise AdapterError("无法连接 Joplin，请确认 Web Clipper 已启用且端口正确。") from exc
-        except requests.RequestException as exc:
-            raise AdapterError(f"访问 Joplin 失败：{exc}") from exc
+        except requests.Timeout:
+            raise AdapterError("连接 Joplin 超时，请确认 Joplin 和 Web Clipper 服务正在运行。") from None
+        except requests.ConnectionError:
+            raise AdapterError("无法连接 Joplin，请确认 Web Clipper 已启用且端口正确。") from None
+        except requests.RequestException:
+            raise AdapterError("访问 Joplin 失败，请检查 API 地址和本机网络设置。") from None
         if not 200 <= response.status_code < 300:
             detail = response.text.strip().replace("\n", " ")[:300]
             if response.status_code in {401, 403}:
