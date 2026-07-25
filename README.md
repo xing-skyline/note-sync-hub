@@ -256,6 +256,12 @@ EXE 由 PyInstaller 打包且当前未进行商业代码签名。部分安全软
 
 欢迎提交 [Issue](https://github.com/xing-skyline/note-sync-hub/issues) 或 Pull Request。涉及同步逻辑的改动请附测试，并说明使用的笔记端、同步方向和复现步骤。
 
+## 致谢与灵感来源
+
+Note Sync Hub 的早期 Joplin–Obsidian 同步思路与 Joplin 集成设计，受到 [gorf/joplin-obsidian-bridge](https://github.com/gorf/joplin-obsidian-bridge) 的启发。感谢 gorf 对 Joplin Web Clipper API、同步标记和双向同步实践的开源分享。
+
+Note Sync Hub 并非该项目的分支。当前项目采用独立设计的多端适配器、统一笔记模型以及“先预览、后执行”的同步架构，并保留对部分 `notebridge_*` 旧同步标记的兼容，以便已有笔记平滑迁移。
+
 ## 许可证
 
 本项目使用 [GNU General Public License v3.0](LICENSE)。

@@ -259,6 +259,12 @@ The EXE is packaged with PyInstaller and is not commercially code-signed. Some s
 
 Issues and pull requests are welcome. Changes to synchronization logic should include tests and a description of the participating apps, direction, and reproduction steps.
 
+## Acknowledgements and inspiration
+
+The early Joplin–Obsidian synchronization concept and Joplin integration in Note Sync Hub were inspired by [gorf/joplin-obsidian-bridge](https://github.com/gorf/joplin-obsidian-bridge). Thanks to gorf for openly sharing their work on the Joplin Web Clipper API, synchronization markers, and bidirectional note synchronization.
+
+Note Sync Hub is not a fork of that project. It uses an independently designed multi-adapter architecture, a unified note model, and a preview-before-apply workflow. Compatibility with selected legacy `notebridge_*` synchronization markers is retained to support smooth migration of existing notes.
+
 ## License
 
 Note Sync Hub is licensed under the [GNU General Public License v3.0](LICENSE).
