@@ -10,7 +10,7 @@ $exePath = Join-Path $projectRoot 'dist\NoteSyncHub.exe'
 
 python -c "import PyInstaller, requests, yaml" 2>$null
 if ($LASTEXITCODE -ne 0) {
-    throw "缺少构建依赖。请先运行：python -m pip install -e '.[build]'"
+    throw "Missing build dependencies. Run: python -m pip install -e '.[build]'"
 }
 
 foreach ($requiredPath in @($iconPath, $iconImagePath, $versionGeneratorPath)) {
