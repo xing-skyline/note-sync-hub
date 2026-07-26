@@ -79,6 +79,11 @@ The application is a portable single-file EXE. Download `SHA256SUMS.txt` as well
 
 The current EXE has no commercial code-signing certificate, so Windows may show an unknown-publisher warning. Download it only from this repository. If you do not want to run unsigned software, use the source instructions below.
 
+See the [Code signing policy](CODE_SIGNING_POLICY.md) for the planned signing
+controls, build provenance, privacy, and key management. The current Release
+remains unsigned until the project is approved and a new signed version is
+actually published.
+
 ### 2. Prepare each app
 
 #### Joplin

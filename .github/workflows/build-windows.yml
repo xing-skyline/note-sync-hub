@@ -1,0 +1,67 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  build-windows:
+    name: Test and build unsigned EXE
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project and build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[build]"
+
+      - name: Run Ruff
+        run: ruff check note_sync_hub tests scripts
+
+      - name: Run tests, build, and verify version resources
+        shell: powershell
+        run: .\build_windows.ps1
+
+      - name: Record Authenticode status
+        shell: powershell
+        run: |
+          $signature = Get-AuthenticodeSignature .\dist\NoteSyncHub.exe
+          $signature | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
+          "### Authenticode status" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "- Status: ``$($signature.Status)``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "- The pre-SignPath artifact is expected to be unsigned." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload unsigned Windows executable
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: NoteSyncHub-windows-unsigned
+          path: dist/NoteSyncHub.exe
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
