@@ -76,6 +76,9 @@ NoteSyncHub-v1.2.0-windows-x64.exe
 
 当前 EXE 没有商业代码签名证书，Windows 可能显示“未知发布者”。请只从本仓库的 Releases 下载；如果你不接受未签名程序，可按下文说明从源码运行。
 
+代码签名准备、构建来源、隐私和密钥管理规则见
+[Code signing policy / 代码签名政策](CODE_SIGNING_POLICY.md)。在项目获得签名服务批准并发布新的签名版本前，当前 Release 仍是未签名版本。
+
 ### 2. 准备笔记端
 
 #### Joplin
