@@ -147,6 +147,22 @@ class JoplinAdapter(NoteAdapter):
             )
         )
 
+    @staticmethod
+    def _is_missing_resource_error(error: AdapterError) -> bool:
+        detail = str(error).casefold()
+        return (
+            ("enoent" in detail and "no such file or directory" in detail)
+            or bool(re.search(r"\bjoplin api\b.*\b404\b", detail))
+        )
+
+    @staticmethod
+    def _missing_resource_message(resource_id: str, title: str = "") -> str:
+        label = f"{title}（Resource {resource_id}）" if title else f"Resource {resource_id}"
+        return (
+            f"Joplin 附件无法读取：{label}。"
+            "请先在 Joplin 中完成同步；若仍然缺失，请重新添加该附件。"
+        )
+
     def _download_resource(self, resource: Dict[str, Any]) -> Tuple[str, bytes, str]:
         resource_id = str(resource.get("id", ""))
         title = str(resource.get("title", "") or resource.get("filename", "") or resource_id)
@@ -176,17 +192,42 @@ class JoplinAdapter(NoteAdapter):
             raw_body = str(item.get("body", "") or "")
             metadata = extract_joplin_metadata(raw_body)
             resource_ids = {value.casefold() for value in RESOURCE_ID_RE.findall(raw_body)}
-            resources = [
-                resource
+            resources = {
+                str(resource.get("id", "")).casefold(): resource
                 for resource in self._list_note_resources(note_id)
                 if str(resource.get("id", "")).casefold() in resource_ids
-            ]
+            }
             assets: Dict[str, Asset] = {}
             links: Dict[str, str] = {}
             revision_parts = [str(item.get("user_updated_time", 0) or 0)]
-            for resource in resources:
-                resource_id = str(resource.get("id", "")).casefold()
-                filename, data, mime = self._download_resource(resource)
+            attachment_issues = [
+                self._missing_resource_message(resource_id)
+                for resource_id in sorted(resource_ids - resources.keys())
+            ]
+            revision_parts.extend(
+                f"{resource_id}:unavailable"
+                for resource_id in sorted(resource_ids - resources.keys())
+            )
+            for resource_id, resource in resources.items():
+                try:
+                    filename, data, mime = self._download_resource(resource)
+                except AdapterError as exc:
+                    if not self._is_missing_resource_error(exc):
+                        raise
+                    title = str(
+                        resource.get("title", "")
+                        or resource.get("filename", "")
+                        or ""
+                    )
+                    attachment_issues.append(
+                        self._missing_resource_message(resource_id, title)
+                    )
+                    revision_parts.append(
+                        f"{resource_id}:unavailable:"
+                        f"{resource.get('updated_time', '')}:"
+                        f"{resource.get('user_updated_time', '')}"
+                    )
+                    continue
                 digest = bytes_sha256(data)
                 assets.setdefault(
                     digest,
@@ -218,7 +259,11 @@ class JoplinAdapter(NoteAdapter):
                     revision=revision,
                     locator="/".join(part for part in (notebook, str(item.get("title", "") or "未命名")) if part),
                     assets=assets,
-                    native={"raw_body": raw_body, "parent_id": item.get("parent_id", "")},
+                    native={
+                        "raw_body": raw_body,
+                        "parent_id": item.get("parent_id", ""),
+                        "attachment_issues": attachment_issues,
+                    },
                 )
             )
         return notes
