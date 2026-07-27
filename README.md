@@ -69,7 +69,7 @@ Note Sync Hub 会在笔记中加入同步标记，用于识别同一条笔记在
 打开 [Releases](https://github.com/xing-skyline/note-sync-hub/releases/latest)，下载：
 
 ```text
-NoteSyncHub-v1.2.0-windows-x64.exe
+NoteSyncHub-v1.2.1-windows-x64.exe
 ```
 
 程序为单文件 EXE，无需安装。建议同时下载 `SHA256SUMS.txt` 并核对文件哈希。

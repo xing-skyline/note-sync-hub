@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "note-sync-hub"
-version = "1.2.0"
+version = "1.2.1"
 description = "Safe desktop synchronization hub for Joplin, Obsidian, and SiYuan."
 readme = "README.md"
 license = "GPL-3.0-or-later"

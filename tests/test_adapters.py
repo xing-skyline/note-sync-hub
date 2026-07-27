@@ -277,6 +277,78 @@ class StubJoplinAdapter(JoplinAdapter):
         return _Resp({})
 
 
+class StubJoplinScanAdapter(JoplinAdapter):
+    """模拟 Joplin 数据库有资源记录、但本地资源文件不可读。"""
+
+    RESOURCE_ID = "c68d9403709e4d14aaaac135293c250b"
+
+    def __init__(self, resource_error=""):
+        super().__init__(AppConfig(joplin_token="token"))
+        self.resource_error = resource_error
+
+    def _load_folders(self, refresh=False):
+        return {"folder-1": {"id": "folder-1", "title": "测试", "parent_id": ""}}
+
+    def _paged(self, path, fields):
+        if path == "/notes":
+            yield {
+                "id": "broken-note",
+                "title": "缺失附件",
+                "body": f"![图](:/{self.RESOURCE_ID})\n",
+                "parent_id": "folder-1",
+                "user_updated_time": 1,
+            }
+            yield {
+                "id": "healthy-note",
+                "title": "正常笔记",
+                "body": "正文\n",
+                "parent_id": "folder-1",
+                "user_updated_time": 1,
+            }
+        elif path == "/notes/broken-note/resources" and self.resource_error != "unlisted":
+            yield {
+                "id": self.RESOURCE_ID,
+                "title": "图.png",
+                "mime": "image/png",
+                "file_extension": "png",
+                "updated_time": 1,
+                "user_updated_time": 1,
+            }
+
+    def _request(self, method, path, **kwargs):
+        if method == "GET" and path == f"/resources/{self.RESOURCE_ID}/file":
+            raise AdapterError(self.resource_error)
+        raise AssertionError(f"未处理的 Joplin API：{method} {path}")
+
+
+class JoplinResourceScanTests(unittest.TestCase):
+    def test_missing_resource_file_marks_only_affected_note_instead_of_aborting_scan(self):
+        adapter = StubJoplinScanAdapter(
+            'Joplin API 返回 500：{"error":"ENOENT: no such file or directory, open resources/图.png"}'
+        )
+
+        notes = adapter.list_notes()
+
+        self.assertEqual([note.native_id for note in notes], ["broken-note", "healthy-note"])
+        self.assertEqual(notes[0].assets, {})
+        self.assertIn(f":/{adapter.RESOURCE_ID}", notes[0].body)
+        self.assertEqual(notes[1].native["attachment_issues"], [])
+        self.assertIn(adapter.RESOURCE_ID, notes[0].native["attachment_issues"][0])
+
+    def test_resource_reference_without_joplin_metadata_is_marked_incomplete(self):
+        adapter = StubJoplinScanAdapter("unlisted")
+
+        notes = adapter.list_notes()
+
+        self.assertIn(adapter.RESOURCE_ID, notes[0].native["attachment_issues"][0])
+
+    def test_unrelated_resource_server_error_still_aborts_scan(self):
+        adapter = StubJoplinScanAdapter("Joplin API 返回 500：database is locked")
+
+        with self.assertRaisesRegex(AdapterError, "database is locked"):
+            adapter.list_notes()
+
+
 class JoplinDedupTests(unittest.TestCase):
     def _existing(self, gid):
         from note_sync_hub.metadata import apply_joplin_metadata, SyncMetadata
