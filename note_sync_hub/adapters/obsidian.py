@@ -82,6 +82,21 @@ def sanitize_filename(value: str, max_length: int = 180) -> str:
     return cleaned[:max_length].rstrip(" .") or "未命名"
 
 
+def send_to_recycle_bin(path: Path) -> None:
+    """Use the system trash; failure must never fall back to permanent deletion."""
+    if os.name == "nt":
+        return send_to_windows_recycle_bin(path)
+    from send2trash import send2trash
+
+    resolved = Path(path).resolve()
+    if not resolved.is_file():
+        raise AdapterError(f"要移入废纸篓的文件不存在：{resolved}")
+    try:
+        send2trash(str(resolved))
+    except Exception as exc:
+        raise AdapterError(f"无法将文件移入系统废纸篓，未执行永久删除：{resolved}：{exc}") from exc
+
+
 class ObsidianAdapter(NoteAdapter):
     endpoint = Endpoint.OBSIDIAN
 
@@ -393,7 +408,7 @@ class ObsidianAdapter(NoteAdapter):
         )
         self._atomic_write(target, content)
         if existing_path and existing_path.exists() and existing_path.resolve() != target.resolve():
-            send_to_windows_recycle_bin(existing_path)
+            send_to_recycle_bin(existing_path)
         return target.relative_to(self.vault).as_posix()
 
     def set_global_id(self, note: Note, global_id: str) -> None:
@@ -408,4 +423,4 @@ class ObsidianAdapter(NoteAdapter):
 
     def move_to_trash(self, note: Note) -> None:
         path = Path(note.native.get("path", self.vault / note.native_id))
-        send_to_windows_recycle_bin(path)
+        send_to_recycle_bin(path)
