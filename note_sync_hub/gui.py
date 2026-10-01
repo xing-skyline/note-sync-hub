@@ -5,7 +5,6 @@ import queue
 import sys
 import threading
 import traceback
-from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote, quote_plus
@@ -14,12 +13,15 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .config import AppConfig, load_config, save_config
-from .diffmerge import DiffChoice, NoteDiff, build_note_diff
+from .dialogs import AdvancedSettingsDialog, DiffDialog
+from .gui_style import configure_style
+from .preview import PreviewPanel
+from .profile_panel import ProfilePanel
+from .adapters.base import ScanCancelled
 from .engine import SyncEngine, SyncEngineError
 from .models import (
     ConflictPolicy,
     Endpoint,
-    Note,
     OperationAction,
     SyncMode,
     SyncOperation,
@@ -59,285 +61,6 @@ def _app_icon_path() -> str:
     return str(base_dir / "assets" / "app-icon.png")
 
 
-def _asset_subset(body: str, *notes: Note) -> Dict[str, object]:
-    combined = {}
-    for note in notes:
-        combined.update(note.assets)
-    return {digest: asset for digest, asset in combined.items() if f"notesync-asset://{digest}/" in body}
-
-
-class DiffDialog(tk.Toplevel):
-    def __init__(self, parent: tk.Misc, left: Note, right: Note):
-        super().__init__(parent)
-        self.left = left
-        self.right = right
-        self.result: Optional[Note] = None
-        self.note_diff: NoteDiff = build_note_diff(
-            left.body,
-            right.body,
-            left.endpoint.label,
-            right.endpoint.label,
-        )
-        self._segments = {str(segment.index): segment for segment in self.note_diff.differences}
-        self.meta_endpoint_var = tk.StringVar(value=left.endpoint.value)
-
-        self.title(f"逐块比较与合并 — {left.title}")
-        self.geometry("1220x790")
-        self.minsize(920, 620)
-        self.transient(parent)
-        self.protocol("WM_DELETE_WINDOW", self._cancel)
-        self._build()
-        self.grab_set()
-        self.focus_set()
-
-    def _build(self) -> None:
-        root = ttk.Frame(self, padding=12)
-        root.pack(fill="both", expand=True)
-        ttk.Label(root, text="逐块比较与合并", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(
-            root,
-            text="每个差异块都要明确选择左侧、右侧或两份都保留；应用前不会修改任何笔记。",
-            style="Subtitle.TLabel",
-        ).pack(anchor="w", pady=(2, 8))
-
-        paths = ttk.Frame(root)
-        paths.pack(fill="x", pady=(0, 8))
-        ttk.Label(paths, text=f"左侧 {self.left.endpoint.label}：{self.left.folder}/{self.left.title}").pack(anchor="w")
-        ttk.Label(paths, text=f"右侧 {self.right.endpoint.label}：{self.right.folder}/{self.right.title}").pack(anchor="w")
-
-        body = ttk.Panedwindow(root, orient="horizontal")
-        body.pack(fill="both", expand=True)
-        segment_frame = ttk.Frame(body)
-        compare_frame = ttk.Frame(body)
-        body.add(segment_frame, weight=2)
-        body.add(compare_frame, weight=5)
-
-        self.segment_tree = ttk.Treeview(
-            segment_frame,
-            columns=("number", "kind", "choice"),
-            show="headings",
-            selectmode="extended",
-        )
-        for column, title, width in (
-            ("number", "#", 42),
-            ("kind", "差异类型", 92),
-            ("choice", "处理方式", 220),
-        ):
-            self.segment_tree.heading(column, text=title)
-            self.segment_tree.column(column, width=width, stretch=column == "choice")
-        segment_scroll = ttk.Scrollbar(segment_frame, orient="vertical", command=self.segment_tree.yview)
-        self.segment_tree.configure(yscrollcommand=segment_scroll.set)
-        self.segment_tree.pack(side="left", fill="both", expand=True)
-        segment_scroll.pack(side="right", fill="y")
-        self.segment_tree.bind("<<TreeviewSelect>>", self._show_selected)
-        for segment in self.note_diff.differences:
-            iid = str(segment.index)
-            self.segment_tree.insert(
-                "",
-                "end",
-                iid=iid,
-                values=(
-                    segment.index,
-                    segment.kind_label,
-                    segment.choice.label(self.left.endpoint.label, self.right.endpoint.label),
-                ),
-            )
-
-        compare = ttk.Panedwindow(compare_frame, orient="horizontal")
-        compare.pack(fill="both", expand=True)
-        left_frame = ttk.LabelFrame(compare, text=self.left.endpoint.label, padding=6)
-        right_frame = ttk.LabelFrame(compare, text=self.right.endpoint.label, padding=6)
-        compare.add(left_frame, weight=1)
-        compare.add(right_frame, weight=1)
-        self.left_text = self._scrolled_text(left_frame)
-        self.right_text = self._scrolled_text(right_frame)
-
-        choices = ttk.LabelFrame(root, text="所选差异块", padding=8)
-        choices.pack(fill="x", pady=(10, 6))
-        for choice in (DiffChoice.USE_LEFT, DiffChoice.USE_RIGHT, DiffChoice.KEEP_BOTH):
-            ttk.Button(
-                choices,
-                text=choice.label(self.left.endpoint.label, self.right.endpoint.label),
-                command=lambda item=choice: self._set_choice(item),
-            ).pack(side="left", padx=(0, 6))
-        ttk.Separator(choices, orient="vertical").pack(side="left", fill="y", padx=8)
-        ttk.Button(
-            choices,
-            text=f"全部采用 {self.left.endpoint.label}",
-            command=lambda: self._choose_all(DiffChoice.USE_LEFT),
-        ).pack(side="left", padx=3)
-        ttk.Button(
-            choices,
-            text=f"全部采用 {self.right.endpoint.label}",
-            command=lambda: self._choose_all(DiffChoice.USE_RIGHT),
-        ).pack(side="left", padx=3)
-        self.unresolved_var = tk.StringVar()
-        ttk.Label(choices, textvariable=self.unresolved_var).pack(side="right")
-
-        metadata = ttk.LabelFrame(root, text="标题、标签和目录以哪一端为准", padding=7)
-        metadata.pack(fill="x", pady=(0, 6))
-        for note in (self.left, self.right):
-            ttk.Radiobutton(
-                metadata,
-                text=f"{note.endpoint.label}（{note.title}）",
-                value=note.endpoint.value,
-                variable=self.meta_endpoint_var,
-            ).pack(side="left", padx=(0, 12))
-
-        actions = ttk.Frame(root)
-        actions.pack(fill="x", pady=(4, 0))
-        ttk.Button(actions, text="取消", command=self._cancel).pack(side="right")
-        ttk.Button(actions, text="应用合并方案", style="Accent.TButton", command=self._apply).pack(
-            side="right", padx=(0, 8)
-        )
-
-        self._refresh_unresolved()
-        if self.note_diff.differences:
-            first = str(self.note_diff.differences[0].index)
-            self.segment_tree.selection_set(first)
-            self.segment_tree.focus(first)
-            self._show_selected()
-
-    @staticmethod
-    def _scrolled_text(parent: tk.Misc) -> tk.Text:
-        """Read-only text widget with both scrollbars."""
-        frame = ttk.Frame(parent)
-        frame.pack(fill="both", expand=True)
-        frame.rowconfigure(0, weight=1)
-        frame.columnconfigure(0, weight=1)
-        text = tk.Text(frame, wrap="none", font=("Consolas", 10), padx=8, pady=8, undo=False,
-                       bg="#ffffff", fg="#1f2937", relief="flat",
-                       highlightthickness=1, highlightbackground="#dbe2ec")
-        vsb = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
-        hsb = ttk.Scrollbar(frame, orient="horizontal", command=text.xview)
-        text.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set, state="disabled")
-        text.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-        return text
-
-    @staticmethod
-    def _set_text(widget: tk.Text, value: str) -> None:
-        widget.configure(state="normal")
-        widget.delete("1.0", "end")
-        widget.insert("1.0", value)
-        widget.configure(state="disabled")
-
-    def _show_selected(self, _event=None) -> None:
-        selected = self.segment_tree.selection()
-        if not selected:
-            return
-        segment = self._segments[selected[0]]
-        self._set_text(self.left_text, segment.left_preview or "（这一端没有对应内容）")
-        self._set_text(self.right_text, segment.right_preview or "（这一端没有对应内容）")
-
-    def _set_choice(self, choice: DiffChoice) -> None:
-        selected = self.segment_tree.selection()
-        if not selected:
-            messagebox.showinfo("请选择差异块", "请先在左侧选择一个或多个差异块。", parent=self)
-            return
-        for iid in selected:
-            segment = self._segments[iid]
-            segment.choice = choice
-            self.segment_tree.set(
-                iid,
-                "choice",
-                choice.label(self.left.endpoint.label, self.right.endpoint.label),
-            )
-        self._refresh_unresolved()
-
-    def _choose_all(self, choice: DiffChoice) -> None:
-        self.note_diff.choose_all(choice)
-        for iid, segment in self._segments.items():
-            self.segment_tree.set(
-                iid,
-                "choice",
-                segment.choice.label(self.left.endpoint.label, self.right.endpoint.label),
-            )
-        self._refresh_unresolved()
-
-    def _refresh_unresolved(self) -> None:
-        self.unresolved_var.set(f"尚未选择：{self.note_diff.unresolved_count} 个")
-
-    def _apply(self) -> None:
-        if self.note_diff.unresolved_count:
-            messagebox.showwarning(
-                "仍有未处理差异",
-                f"还有 {self.note_diff.unresolved_count} 个差异块没有选择处理方式。",
-                parent=self,
-            )
-            return
-        try:
-            merged_body, _same_body = self.note_diff.render()
-        except ValueError as exc:
-            messagebox.showerror("合并方案无效", str(exc), parent=self)
-            return
-        metadata_note = self.left if self.meta_endpoint_var.get() == self.left.endpoint.value else self.right
-        self.result = replace(
-            metadata_note,
-            body=merged_body,
-            assets=_asset_subset(merged_body, self.left, self.right),
-        )
-        self.destroy()
-
-    def _cancel(self) -> None:
-        self.result = None
-        self.destroy()
-
-
-class AdvancedSettingsDialog(tk.Toplevel):
-    def __init__(self, parent: tk.Misc, config: AppConfig):
-        super().__init__(parent)
-        self.result: Optional[Tuple[int, str, str, str]] = None
-        self.title("高级设置")
-        self.geometry("640x310")
-        self.resizable(True, False)
-        self.transient(parent)
-        self.timeout_var = tk.StringVar(value=str(config.request_timeout))
-        self.attachment_var = tk.StringVar(value=config.obsidian_attachments_folder)
-        self.joplin_default_var = tk.StringVar(value=config.joplin_default_notebook)
-        self.siyuan_default_var = tk.StringVar(value=config.siyuan_default_notebook)
-
-        root = ttk.Frame(self, padding=14)
-        root.pack(fill="both", expand=True)
-        root.columnconfigure(1, weight=1)
-        rows = (
-            ("网络超时（秒）", self.timeout_var),
-            ("Obsidian 默认附件目录", self.attachment_var),
-            ("Joplin 根目录写入时使用的笔记本", self.joplin_default_var),
-            ("思源根目录写入时使用的笔记本", self.siyuan_default_var),
-        )
-        for row, (label, variable) in enumerate(rows):
-            ttk.Label(root, text=label).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=6)
-            ttk.Entry(root, textvariable=variable).grid(row=row, column=1, sticky="ew", pady=6)
-        ttk.Label(
-            root,
-            text="这些默认目录只在目标路径没有明确笔记本/附件目录时使用。",
-            style="Subtitle.TLabel",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 10))
-        actions = ttk.Frame(root)
-        actions.grid(row=5, column=0, columnspan=2, sticky="e")
-        ttk.Button(actions, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(actions, text="确定", command=self._apply).pack(side="right", padx=(0, 8))
-        self.grab_set()
-
-    def _apply(self) -> None:
-        try:
-            timeout = int(self.timeout_var.get())
-            if timeout < 1:
-                raise ValueError
-        except ValueError:
-            messagebox.showerror("设置无效", "网络超时必须是大于 0 的整数。", parent=self)
-            return
-        self.result = (
-            timeout,
-            self.attachment_var.get().strip() or "attachments",
-            self.joplin_default_var.get().strip() or "Note Sync Hub",
-            self.siyuan_default_var.get().strip() or "Note Sync Hub",
-        )
-        self.destroy()
-
-
 class SyncApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -358,6 +81,9 @@ class SyncApp(tk.Tk):
         self.events: queue.Queue = queue.Queue()
         self.worker: Optional[threading.Thread] = None
         self.cancel_event = threading.Event()
+        self._closing = False
+        self._busy = False
+        self._active_secrets = ()
         self.plan: Optional[SyncPlan] = None
         self.plan_engine: Optional[SyncEngine] = None
         self.plan_config: Optional[Dict[str, object]] = None
@@ -368,96 +94,12 @@ class SyncApp(tk.Tk):
         self.target_folder_combos: Dict[Endpoint, ttk.Combobox] = {}
         self.endpoint_checks: Dict[Endpoint, ttk.Checkbutton] = {}
         self.log_messages: List[str] = []
-        self._configure_style()
+        configure_style(self)
         self._load_variables()
         self._build()
         self._toggle_options()
+        self.profile_panel.restore_last()
         self.after(100, self._drain_events)
-
-    def _configure_style(self) -> None:
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-
-        BG      = "#eef1f6"
-        CARD    = "#ffffff"
-        BORDER  = "#dbe2ec"
-        INK     = "#1f2937"
-        MUTED   = "#64748b"
-        ACCENT  = "#2563eb"
-        ACCENT_D= "#1e40af"
-        GHOST   = "#e8edf5"
-        GHOST_A = "#dbe3ee"
-        WARN    = "#b45309"
-
-        # White card surface everywhere; the gray only peeks at the window edge.
-        # Keeping one uniform background avoids gray/white mismatches on the
-        # dozens of nested frames and labels.
-        self.configure(background=BG)
-        style.configure(".", font=("Microsoft YaHei UI", 10), background=CARD, foreground=INK)
-
-        style.configure("TFrame", background=CARD)
-        style.configure("App.TFrame", background=BG)
-
-        style.configure("TLabel", background=CARD, foreground=INK)
-        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 15, "bold"), foreground=INK, background=BG)
-        style.configure("Subtitle.TLabel", font=("Microsoft YaHei UI", 9), foreground=MUTED, background=CARD)
-        style.configure("App.Subtitle.TLabel", font=("Microsoft YaHei UI", 9), foreground=MUTED, background=BG)
-        style.configure("Warn.TLabel", background=CARD, foreground=WARN)
-
-        style.configure("TLabelframe", background=CARD, bordercolor=BORDER, relief="solid", borderwidth=1)
-        style.configure("TLabelframe.Label", background=CARD, foreground=INK, font=("Microsoft YaHei UI", 10, "bold"))
-
-        style.configure("TButton", font=("Microsoft YaHei UI", 10), padding=(12, 6), borderwidth=1)
-        style.map("TButton", relief=[("pressed", "sunken")])
-
-        style.configure("Accent.TButton",
-            font=("Microsoft YaHei UI", 10, "bold"),
-            background=ACCENT, foreground="#ffffff",
-            bordercolor=ACCENT, padding=(14, 7))
-        style.map("Accent.TButton",
-            background=[("disabled", "#bfdbfe"), ("pressed", ACCENT_D), ("active", ACCENT_D)],
-            bordercolor=[("disabled", "#bfdbfe"), ("active", ACCENT_D)],
-            foreground=[("disabled", "#ffffff")])
-
-        style.configure("Ghost.TButton",
-            background=GHOST, foreground=INK, bordercolor=GHOST, padding=(12, 6))
-        style.map("Ghost.TButton",
-            background=[("disabled", GHOST), ("pressed", GHOST_A), ("active", GHOST_A)],
-            foreground=[("disabled", "#9aa7b8")])
-
-        style.configure("TRadiobutton", background=CARD, foreground=INK)
-        style.configure("TCheckbutton", background=CARD, foreground=INK)
-        style.map("TRadiobutton", background=[("active", CARD)])
-        style.map("TCheckbutton", background=[("active", CARD)])
-
-        style.configure("TEntry", padding=5, fieldbackground=CARD, bordercolor=BORDER)
-        style.configure("TCombobox", padding=4, fieldbackground=CARD, bordercolor=BORDER)
-        style.configure("TSeparator", background=BORDER)
-
-        style.configure("Treeview",
-            background=CARD, fieldbackground=CARD, foreground=INK,
-            rowheight=28, borderwidth=0, font=("Microsoft YaHei UI", 9))
-        style.configure("Treeview.Heading",
-            background="#f1f5f9", foreground="#334155",
-            font=("Microsoft YaHei UI", 9, "bold"), relief="flat", padding=(6, 6))
-        style.map("Treeview",
-            background=[("selected", "#dbeafe")],
-            foreground=[("selected", INK)])
-
-        style.configure("Vertical.TScrollbar",
-            background="#cbd5e1", troughcolor=BG, borderwidth=0, arrowcolor=INK)
-        style.configure("Horizontal.TScrollbar",
-            background="#cbd5e1", troughcolor=BG, borderwidth=0, arrowcolor=INK)
-        style.configure("TProgressbar",
-            background=ACCENT, troughcolor="#e2e8f0", borderwidth=0, thickness=8)
-
-        # Store for use in tk.Text widgets
-        self._card_bg = CARD
-        self._ink = INK
-        self._border = BORDER
 
     def _load_variables(self) -> None:
         try:
@@ -515,6 +157,10 @@ class SyncApp(tk.Tk):
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(1, 0))
 
+        self.profile_panel = ProfilePanel(outer, self._collect_config, self._collect_options,
+                                          self._apply_options, self.status_var.set)
+        self.profile_panel.pack(fill="x", pady=(0, 8))
+
         # Main horizontal split: left settings | right preview+log
         self._main_pane = ttk.Panedwindow(outer, orient="horizontal")
         self._main_pane.pack(fill="both", expand=True, pady=(0, 4))
@@ -538,7 +184,9 @@ class SyncApp(tk.Tk):
         )
 
     def _build_left(self, parent: ttk.Frame) -> None:
-        # Connection + options are fixed-height (anchored to top); folders fill the rest.
+        self.connection_toggle = ttk.Button(parent, text="收起连接设置", command=self._toggle_connections)
+        self.connection_toggle.pack(anchor="w", pady=(0, 4))
+        self._connections_visible = True
         self._build_connection(parent)
         self._build_options(parent)
         folder_frame = ttk.Frame(parent)
@@ -547,6 +195,7 @@ class SyncApp(tk.Tk):
 
     def _build_connection(self, parent: ttk.Frame) -> None:
         connection = ttk.LabelFrame(parent, text="1. 连接设置与启用的笔记端", padding=8)
+        self.connection_box = connection
         connection.pack(fill="x", pady=(0, 6))
         connection.columnconfigure(2, weight=1)
         connection.columnconfigure(4, weight=1)
@@ -589,6 +238,7 @@ class SyncApp(tk.Tk):
 
     def _build_options(self, parent: ttk.Frame) -> None:
         options = ttk.LabelFrame(parent, text="2. 同步方式、范围与安全选项", padding=8)
+        self.options_box = options
         options.pack(fill="x", pady=(0, 6))
 
         line1 = ttk.Frame(options)
@@ -650,6 +300,14 @@ class SyncApp(tk.Tk):
         self.delete_check.pack(side="left")
         ttk.Label(line3, textvariable=self.delete_hint_var, foreground="#9a5b00").pack(side="left", padx=(12, 0))
 
+    def _toggle_connections(self, visible=None) -> None:
+        self._connections_visible = not self._connections_visible if visible is None else visible
+        if self._connections_visible:
+            self.connection_box.pack(fill="x", pady=(0, 6), before=self.options_box)
+        else:
+            self.connection_box.pack_forget()
+        self.connection_toggle.configure(text="收起连接设置" if self._connections_visible else "展开连接设置")
+
     def _build_folders(self, parent: ttk.Frame) -> None:
         folders = ttk.LabelFrame(parent, text="3. 目录范围与单向目标目录", padding=8)
         folders.pack(fill="both", expand=True)
@@ -702,41 +360,17 @@ class SyncApp(tk.Tk):
         self._build_log(log_frame)
 
     def _build_preview(self, parent: ttk.Frame) -> None:
-        preview = ttk.LabelFrame(parent, text="4. 同步预览（双击冲突也可处理）", padding=8)
-        preview.pack(fill="both", expand=True)
-        preview.rowconfigure(0, weight=1)
-        preview.columnconfigure(0, weight=1)
-
-        columns = ("action", "title", "direction", "reason")
-        self.preview_tree = ttk.Treeview(
-            preview, columns=columns, show="headings", selectmode="browse",
-        )
-        for column, title, width, stretch in (
-            ("action", "操作", 86, False),
-            ("title", "笔记", 200, True),
-            ("direction", "方向", 240, True),
-            ("reason", "原因 / 安全说明", 500, True),
-        ):
-            self.preview_tree.heading(column, text=title)
-            self.preview_tree.column(column, width=width, stretch=stretch)
-
-        preview_scroll_y = ttk.Scrollbar(preview, orient="vertical", command=self.preview_tree.yview)
-        preview_scroll_x = ttk.Scrollbar(preview, orient="horizontal", command=self.preview_tree.xview)
-        self.preview_tree.configure(yscrollcommand=preview_scroll_y.set, xscrollcommand=preview_scroll_x.set)
-        self.preview_tree.grid(row=0, column=0, sticky="nsew")
-        preview_scroll_y.grid(row=0, column=1, sticky="ns")
-        preview_scroll_x.grid(row=1, column=0, sticky="ew")
-        self.preview_tree.bind("<Double-1>", lambda _e: self._resolve_selected_conflict())
-        self.preview_tree.tag_configure("conflict", foreground="#a33a2b")
-        self.preview_tree.tag_configure("delete", foreground="#9a5b00")
-        self.preview_tree.tag_configure("skip", foreground="#777777")
+        self.preview_panel = PreviewPanel(parent, self._resolve_selected_conflict)
+        self.preview_panel.pack(fill="both", expand=True)
+        self.preview_tree = self.preview_panel.tree
+        self.operation_by_iid = self.preview_panel.operations
 
         action_bar = ttk.Frame(parent)
         action_bar.pack(fill="x", pady=(4, 0))
         self.resolve_button = ttk.Button(action_bar, text="比较并处理所选冲突…", command=self._resolve_selected_conflict)
         self.resolve_button.pack(side="left")
         self.execute_button = ttk.Button(
-            action_bar, text="执行预览中的安全操作", style="Accent.TButton", command=self._execute
+            action_bar, text="执行勾选的安全操作", style="Accent.TButton", command=self._execute
         )
         self.execute_button.pack(side="right")
         self.cancel_button = ttk.Button(action_bar, text="取消当前任务", command=self._cancel_worker, state="disabled")
@@ -850,6 +484,43 @@ class SyncApp(tk.Tk):
         listbox = self.folder_lists[endpoint]
         return tuple(self.folder_values[endpoint][i] for i in listbox.curselection())
 
+    def _apply_options(self, options: SyncOptions) -> None:
+        self.plan = None
+        self.plan_engine = None
+        self.plan_config = None
+        self.plan_options = None
+        self._render_plan()
+        for endpoint in Endpoint:
+            self.endpoint_vars[endpoint].set(endpoint in options.endpoints)
+            self.target_endpoint_vars[endpoint].set(endpoint in options.targets)
+            self.target_folder_vars[endpoint].set(options.target_folders.get(endpoint, ""))
+            selected = options.selected_folders.get(endpoint, ())
+            values = sorted(set(self.folder_values[endpoint]) | set(selected), key=str.casefold)
+            self._populate_folders(endpoint, values, selected)
+        self.mode_var.set(next(label for label, mode in MODE_LABELS.items() if mode == options.mode))
+        self.source_var.set((options.source or options.endpoints[0]).label)
+        self.primary_var.set((options.primary or options.endpoints[0]).label)
+        self._last_source_endpoint = options.source
+        self.scope_var.set("all" if options.scope_all else "selected")
+        self.include_subfolders_var.set(options.include_subfolders)
+        self.propagate_deletions_var.set(options.propagate_deletions)
+        self.target_mode_var.set(next(label for label, mode in TARGET_MODE_LABELS.items() if mode == options.target_mode))
+        self.conflict_policy_var.set(next(label for label, policy in CONFLICT_POLICY_LABELS.items() if policy == options.conflict_policy))
+        self._toggle_options()
+
+        self._toggle_connections(False)
+
+    def _populate_folders(self, endpoint, values, selected) -> None:
+        self.folder_values[endpoint] = values
+        listbox = self.folder_lists[endpoint]
+        listbox.configure(state="normal")
+        listbox.delete(0, "end")
+        for index, value in enumerate(values):
+            listbox.insert("end", value or "（根目录）")
+            if value in selected:
+                listbox.selection_set(index)
+        self.target_folder_combos[endpoint].configure(values=[value for value in values if value])
+
     def _collect_options(self) -> SyncOptions:
         endpoints = self._sync_endpoints()
         mode = MODE_LABELS[self.mode_var.get()]
@@ -917,7 +588,7 @@ class SyncApp(tk.Tk):
             messagebox.showinfo("已保存", f"设置已保存到：\n{path}", parent=self)
 
     def _engine(self, config: AppConfig) -> SyncEngine:
-        return SyncEngine(config, logger=lambda msg: self.events.put(("log", msg)))
+        return SyncEngine(config, logger=lambda msg: self.events.put(("log", msg)), cancel_event=self.cancel_event)
 
     # --------------------------------------------------------- folder actions
 
@@ -952,16 +623,11 @@ class SyncApp(tk.Tk):
 
     def _folders_done(self, folders: Dict[Endpoint, List[str]]) -> None:
         for endpoint, values in folders.items():
-            display_values = values or [""]
-            self.folder_values[endpoint] = display_values
-            listbox = self.folder_lists[endpoint]
-            listbox.delete(0, "end")
-            for value in display_values:
-                listbox.insert("end", value or "（根目录）")
-            combo_values = [v for v in display_values if v]
-            self.target_folder_combos[endpoint].configure(values=combo_values)
-            if self.target_folder_vars[endpoint].get() not in combo_values:
-                self.target_folder_vars[endpoint].set(combo_values[0] if combo_values else "")
+            selected = self._selected_folders(endpoint)
+            display_values = sorted(set(values) | set(selected), key=str.casefold)
+            self._populate_folders(endpoint, display_values or [""], selected)
+            if set(selected) - set(values):
+                self._append_log(f"{endpoint.label} 部分已选目录当前不存在，已保留选择，请核对同步范围。")
         # restore correct enabled/disabled state after populating
         self._toggle_options()
         summary = "；".join(f"{ep.label} {len(v)} 个目录" for ep, v in folders.items())
@@ -998,28 +664,11 @@ class SyncApp(tk.Tk):
         )
 
     def _render_plan(self) -> None:
-        for iid in self.preview_tree.get_children():
-            self.preview_tree.delete(iid)
-        self.operation_by_iid.clear()
-        if not self.plan:
-            return
-        for index, operation in enumerate(self.plan.operations):
-            iid = f"op-{index}"
-            tag = ""
-            if operation.action == OperationAction.CONFLICT:
-                tag = "conflict"
-            elif operation.action == OperationAction.DELETE:
-                tag = "delete"
-            elif operation.action == OperationAction.SKIP:
-                tag = "skip"
-            self.preview_tree.insert(
-                "", "end", iid=iid,
-                values=(operation.action.label, operation.title, operation.direction_label, operation.reason),
-                tags=(tag,) if tag else (),
-            )
-            self.operation_by_iid[iid] = operation
+        self.preview_panel.set_plan(self.plan)
 
     def _resolve_selected_conflict(self) -> None:
+        if self._busy:
+            return
         selected = self.preview_tree.selection()
         if not selected:
             messagebox.showinfo("请选择预览项", "请先在同步预览中选择一条冲突。", parent=self)
@@ -1028,23 +677,13 @@ class SyncApp(tk.Tk):
         if operation.action != OperationAction.CONFLICT:
             messagebox.showinfo("无需处理", "所选项目不是待处理冲突。", parent=self)
             return
-        if not self.plan or not operation.global_id:
+        if not self.plan or not operation.can_resolve:
             messagebox.showwarning(
                 "无法在软件内自动处理",
-                "这是重复同步 ID 或同路径多条笔记造成的歧义，请先到对应笔记软件中人工整理重复项。",
+                operation.reason + "\n\n请先在对应笔记端修复，再重新生成预览。",
                 parent=self,
             )
             return
-        # Detect attachment-blocked conflicts by checking for missing/ambiguous assets
-        # (engine sets reason containing "附件" when asset resolution fails)
-        if operation.reason and "附件" in operation.reason and "无法" in operation.reason:
-            messagebox.showwarning(
-                "请先修复附件",
-                "该冲突来自缺失或不明确的附件。请先在来源笔记中修复链接，再重新生成预览。",
-                parent=self,
-            )
-            return
-
         primary = self.plan.options.primary
         versions = sorted(
             operation.versions.values(),
@@ -1070,17 +709,13 @@ class SyncApp(tk.Tk):
                     return
                 merged = dialog.result
 
-        operation.resolved_note = merged
-        operation.source = merged.endpoint
-        operation.targets = tuple(self.plan.options.endpoints)
-        operation.target_folders = {
-            ep: operation.versions[ep].folder if ep in operation.versions else merged.folder
-            for ep in operation.targets
-        }
-        operation.action = OperationAction.UPDATE
-        operation.reason = "已人工逐块比较；执行时会把确认后的版本写入所有所选端。"
+        try:
+            self.plan_engine.resolve_conflict(self.plan, operation, merged)
+        except ValueError as exc:
+            messagebox.showwarning("无法处理此冲突", str(exc), parent=self)
+            return
         self._render_plan()
-        self.status_var.set("冲突已处理并加入可执行操作；仍需点击【执行预览中的安全操作】。")
+        self.status_var.set("冲突已处理并加入可执行操作；仍需点击【执行勾选的安全操作】。")
 
     def _execute(self) -> None:
         if not self.plan or not self.plan_engine:
@@ -1133,25 +768,29 @@ class SyncApp(tk.Tk):
         self.plan_engine = None
         self.plan_config = None
         self.plan_options = None
-        for iid in self.preview_tree.get_children():
-            self.preview_tree.delete(iid)
-        self.operation_by_iid.clear()
-        summary = f"完成 {result.completed} 项，跳过 {result.skipped} 项，错误 {len(result.errors)} 项。"
+        self._render_plan()
+        successful_targets = sum(item.success for item in result.targets)
+        label = "同步已取消" if result.cancelled else "同步完成"
+        summary = f"{label}：完成 {result.completed} 项，目标操作成功 {successful_targets} 次，跳过 {result.skipped} 项，错误 {len(result.errors)} 项。"
         self.status_var.set(summary)
-        if result.errors:
-            messagebox.showwarning("同步完成但有错误", summary + "\n\n" + "\n".join(result.errors), parent=self)
-        else:
-            messagebox.showinfo("同步完成", summary, parent=self)
+        for item in result.targets:
+            self._append_log(f"{'成功' if item.success else '失败'}：{item.title} → {item.endpoint.label} / {item.action.label}" + (f"：{item.error}" if item.error else ""))
+        if not self._closing:
+            if result.errors:
+                messagebox.showwarning("同步结束但有错误", self._redact_runtime_secrets(summary + "\n\n" + "\n".join(result.errors)), parent=self)
+            else:
+                messagebox.showinfo(label, summary, parent=self)
 
     # --------------------------------------------------------- async runner
 
     def _run_async(self, label: str, task: Callable[[], object], success: Callable[[object], None]) -> None:
-        if self.worker and self.worker.is_alive():
+        if self._busy or self._closing:
             messagebox.showinfo("任务正在运行", "请等待当前任务完成，或先取消当前任务。", parent=self)
             return
         # Fix: clear cancel flag before each new task so a previous cancellation
         # doesn't immediately abort the next run.
         self.cancel_event.clear()
+        self._active_secrets = (self.joplin_token_var.get(), self.siyuan_token_var.get())
         self.progress.configure(value=0, maximum=100, mode="indeterminate")
         self.progress.start(12)
         self.progress_text_var.set(label)
@@ -1167,7 +806,7 @@ class SyncApp(tk.Tk):
             finally:
                 self.events.put(("finished",))
 
-        self.worker = threading.Thread(target=runner, daemon=True)
+        self.worker = threading.Thread(target=runner, daemon=False)
         self.worker.start()
 
     def _drain_events(self) -> None:
@@ -1190,7 +829,8 @@ class SyncApp(tk.Tk):
                     self._append_log(detail)
                     title = "同步已停止" if isinstance(exc, SyncEngineError) else "操作失败"
                     safe_message = self._redact_runtime_secrets(str(exc))
-                    messagebox.showerror(title, safe_message, parent=self)
+                    if not isinstance(exc, ScanCancelled) and not self._closing:
+                        messagebox.showerror(title, safe_message, parent=self)
                     self.status_var.set(safe_message)
                 elif kind == "finished":
                     self.progress.stop()
@@ -1217,9 +857,13 @@ class SyncApp(tk.Tk):
             text,
             self.joplin_token_var.get(),
             self.siyuan_token_var.get(),
+            *self._active_secrets,
         )
 
     def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        self.preview_panel.busy = busy
+        self.profile_panel.set_busy(busy)
         state = "disabled" if busy else "normal"
         for button in (self.test_button, self.refresh_button, self.preview_button, self.execute_button):
             button.configure(state=state)
@@ -1232,17 +876,28 @@ class SyncApp(tk.Tk):
         self.progress_text_var.set("正在请求取消；当前单条笔记完成后停止……")
 
     def _on_close(self) -> None:
+        if self._closing:
+            return
         if self.worker and self.worker.is_alive():
             if not messagebox.askyesno(
                 "任务仍在运行",
-                "当前任务仍在运行。关闭窗口会请求取消，当前正在写入的单条笔记可能仍会完成。是否关闭？",
+                "关闭会请求取消，并等待当前笔记处理完成、保存进度后退出。是否继续？",
                 parent=self,
             ):
                 return
+            self._closing = True
             self.cancel_event.set()
-            # Give the worker a moment to finish the current note write before destroying
-            self.worker.join(timeout=3)
+            self._set_busy(True)
+            self.progress_text_var.set("正在等待当前笔记完成并保存进度……")
+            self.after(100, self._finish_close)
+            return
         self.destroy()
+
+    def _finish_close(self) -> None:
+        if self.worker and self.worker.is_alive():
+            self.after(100, self._finish_close)
+        else:
+            self.destroy()
 
 
 def _set_windows_app_id() -> None:

@@ -11,13 +11,14 @@ import requests
 from ..attachments import (
     bytes_sha256,
     canonical_asset_uri,
+    find_attachment_references,
     replace_canonical_asset_uris,
     replace_joplin_resource_links,
 )
 from ..config import AppConfig
 from ..metadata import SyncMetadata, apply_joplin_metadata, extract_joplin_metadata, strip_joplin_metadata
 from ..models import Asset, Endpoint, Note, normalize_folder
-from .base import AdapterError, NoteAdapter
+from .base import AdapterError, NoteAdapter, NoteNotFound
 
 
 RESOURCE_ID_RE = re.compile(r":/([a-fA-F0-9]{32})")
@@ -36,6 +37,7 @@ class JoplinAdapter(NoteAdapter):
     def __init__(self, config: AppConfig):
         self.config = config
         self.session = requests.Session()
+        self._known_note_ids: set[str] = set()
         self._folders_by_id: Optional[Dict[str, Dict[str, str]]] = None
 
     def _request(
@@ -49,6 +51,7 @@ class JoplinAdapter(NoteAdapter):
         files: Optional[Dict[str, Any]] = None,
         timeout: Optional[int] = None,
     ) -> requests.Response:
+        self.check_cancelled()
         query = dict(params or {})
         query["token"] = self.config.joplin_token
         url = f"{self.config.joplin_api_base.rstrip('/')}/{path.lstrip('/')}"
@@ -72,7 +75,8 @@ class JoplinAdapter(NoteAdapter):
             detail = response.text.strip().replace("\n", " ")[:300]
             if response.status_code in {401, 403}:
                 raise AdapterError("Joplin 拒绝访问，请检查 Token。")
-            raise AdapterError(f"Joplin API 返回 {response.status_code}：{detail}")
+            error_type = NoteNotFound if response.status_code == 404 else AdapterError
+            raise error_type(f"Joplin API 返回 {response.status_code}：{detail}")
         return response
 
     def _paged(self, path: str, fields: str) -> Iterable[Dict[str, Any]]:
@@ -87,7 +91,11 @@ class JoplinAdapter(NoteAdapter):
                 payload = response.json()
             except ValueError as exc:
                 raise AdapterError("Joplin 返回了无法解析的数据。") from exc
-            yield from payload.get("items", [])
+            if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+                raise AdapterError("Joplin 分页数据不完整，已停止扫描。")
+            if any(not isinstance(item, dict) or not item.get("id") for item in payload["items"]):
+                raise AdapterError("Joplin 分页项目无效，已停止扫描。")
+            yield from payload["items"]
             if not payload.get("has_more", False):
                 break
             page += 1
@@ -182,16 +190,42 @@ class JoplinAdapter(NoteAdapter):
 
     def list_notes(self) -> List[Note]:
         self._load_folders(refresh=True)
-        notes: List[Note] = []
         fields = "id,title,body,parent_id,user_updated_time"
-        for item in self._paged("/notes", fields):
+        items = list(self._paged("/notes", fields))
+        self._known_note_ids = {str(item["id"]).casefold() for item in items}
+        return self._read_items(items)
+
+    def read_note(self, native_id: str) -> Optional[Note]:
+        try:
+            response = self._request("GET", f"/notes/{native_id}", params={
+                "fields": "id,title,body,parent_id,user_updated_time,deleted_time",
+            })
+        except NoteNotFound:
+            return None
+        item = response.json()
+        if not isinstance(item, dict) or item.get("id") != native_id or "body" not in item:
+            raise AdapterError("Joplin 笔记数据不完整，已停止同步。")
+        if item.get("deleted_time"):
+            return None
+        self._known_note_ids.add(native_id.casefold())
+        return next(iter(self._read_items([item])), None)
+
+    def _read_items(self, items) -> List[Note]:
+        notes: List[Note] = []
+        for item in items:
+            self.check_cancelled()
             notebook = self._folder_path(item.get("parent_id", ""))
             if notebook == LEGACY_TRASH_NOTEBOOK or notebook.startswith(LEGACY_TRASH_NOTEBOOK + "/"):
                 continue
             note_id = str(item["id"])
             raw_body = str(item.get("body", "") or "")
             metadata = extract_joplin_metadata(raw_body)
-            resource_ids = {value.casefold() for value in RESOURCE_ID_RE.findall(raw_body)}
+            resource_ids = {
+                match.group(1).casefold()
+                for reference in find_attachment_references(raw_body)
+                if (match := RESOURCE_ID_RE.fullmatch(reference.target.split("#", 1)[0]))
+                and match.group(1).casefold() not in self._known_note_ids
+            }
             resources = {
                 str(resource.get("id", "")).casefold(): resource
                 for resource in self._list_note_resources(note_id)

@@ -103,8 +103,12 @@ class FakeAdapter(NoteAdapter):
         return native_id
 
     def set_global_id(self, note, global_id):
+        stored = next(item for item in self.notes if item.native_id == note.native_id)
+        stored.global_id = global_id
+        stored.revision += "-linked"
+        stored.native.pop("metadata_needs_repair", None)
         note.global_id = global_id
-        note.revision += "-linked"
+        note.revision = stored.revision
         note.native.pop("metadata_needs_repair", None)
         self.links.append((note.native_id, global_id))
 
@@ -129,6 +133,9 @@ def state_record(*notes: Note):
 
 
 class NormalizingFakeAdapter(FakeAdapter):
+    def matches_written(self, actual, source, folder):
+        return super().matches_written(actual, replace(source, body=f"# {source.title}\n\n{source.body}"), folder)
+
     def upsert_note(self, source, existing, folder, global_id):
         native_id = super().upsert_note(source, existing, folder, global_id)
         written = next(note for note in self.notes if note.native_id == native_id)

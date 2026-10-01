@@ -104,7 +104,6 @@ class ObsidianAdapter(NoteAdapter):
         self.config = config
         self.vault = Path(config.obsidian_vault_path).expanduser().resolve()
         self.attachment_folder_setting = self._read_attachment_folder_setting()
-        self._attachment_directory_names = self._build_attachment_directory_names()
         self._filename_index: Optional[Dict[str, List[Path]]] = None
 
     def test_connection(self) -> str:
@@ -123,29 +122,40 @@ class ObsidianAdapter(NoteAdapter):
             return configured.strip().replace("\\", "/")
         return (self.config.obsidian_attachments_folder or "attachments").strip().replace("\\", "/")
 
-    def _build_attachment_directory_names(self) -> set[str]:
-        names = {"assets", "attachments"}
-        for value in (self.attachment_folder_setting, self.config.obsidian_attachments_folder):
-            for part in str(value or "").replace("\\", "/").split("/"):
-                cleaned = part.strip().casefold()
-                if cleaned and cleaned not in {".", ".."}:
-                    names.add(cleaned)
-        return names
+    def _is_attachment_directory(self, path: Path) -> bool:
+        relative = path.relative_to(self.vault).as_posix().casefold()
+        for value in ("assets", "attachments", self.attachment_folder_setting):
+            setting = str(value or "").replace("\\", "/").rstrip("/").casefold()
+            if setting in {"", "."}:
+                continue
+            if setting.startswith("./"):
+                suffix = setting[2:]
+                if relative == suffix or relative.endswith("/" + suffix):
+                    return True
+            elif relative == setting.strip("/"):
+                return True
+        return False
+
+    @staticmethod
+    def _walk_error(error: OSError) -> None:
+        raise AdapterError(f"无法完整扫描 Obsidian 目录，已停止同步：{error}") from error
 
     def _walk_notes(self):
         excluded = {".obsidian", ".trash", LEGACY_TRASH_FOLDER}
-        for root, directories, files in os.walk(self.vault, followlinks=False):
+        for root, directories, files in os.walk(self.vault, followlinks=False, onerror=self._walk_error):
+            self.check_cancelled()
             directories[:] = [
                 name
                 for name in directories
                 if name.casefold() not in excluded
-                and name.casefold() not in self._attachment_directory_names
+                and not self._is_attachment_directory(Path(root) / name)
             ]
             yield Path(root), directories, files
 
     def _walk_resource_files(self):
         excluded = {".obsidian", ".trash", LEGACY_TRASH_FOLDER}
-        for root, directories, files in os.walk(self.vault, followlinks=False):
+        for root, directories, files in os.walk(self.vault, followlinks=False, onerror=self._walk_error):
+            self.check_cancelled()
             directories[:] = [name for name in directories if name.casefold() not in excluded]
             root_path = Path(root)
             for name in files:
@@ -229,83 +239,103 @@ class ObsidianAdapter(NoteAdapter):
 
     def list_notes(self) -> List[Note]:
         self._filename_index = None
+        paths = (root / name for root, _directories, files in self._walk_notes()
+                 for name in files if name.casefold().endswith(".md"))
+        return self._read_paths(paths)
+
+    def read_note(self, native_id: str) -> Optional[Note]:
+        path = self.vault / native_id
+        if not path.is_file():
+            return None
+        notes = self._read_paths([path])
+        return notes[0] if notes else None
+
+    def _read_paths(self, paths) -> List[Note]:
         notes: List[Note] = []
-        for root, _directories, files in self._walk_notes():
-            for name in files:
-                if not name.casefold().endswith(".md"):
-                    continue
-                path = root / name
-                if path.is_symlink():
-                    continue
+        for path in paths:
+            self.check_cancelled()
+            if path.is_symlink():
+                continue
+            try:
+                raw_body = path.read_text(encoding="utf-8")
+                stat = path.stat()
+            except (OSError, UnicodeError) as exc:
+                raise AdapterError(f"无法读取 Obsidian 文件：{path}（{exc}）") from exc
+            metadata = extract_obsidian_metadata(raw_body)
+            clean_body = strip_obsidian_metadata(raw_body)
+            resolved, issues = self._analyze_attachments(path, clean_body)
+            assets: Dict[str, Asset] = {}
+            replacements = []
+            revision_parts = [str(stat.st_mtime_ns), str(stat.st_size)]
+            for item in resolved:
                 try:
-                    raw_body = path.read_text(encoding="utf-8")
-                    stat = path.stat()
-                except (OSError, UnicodeError) as exc:
-                    raise AdapterError(f"无法读取 Obsidian 文件：{path}（{exc}）") from exc
-                metadata = extract_obsidian_metadata(raw_body)
-                clean_body = strip_obsidian_metadata(raw_body)
-                resolved, issues = self._analyze_attachments(path, clean_body)
-                assets: Dict[str, Asset] = {}
-                replacements = []
-                revision_parts = [str(stat.st_mtime_ns), str(stat.st_size)]
-                for item in resolved:
-                    try:
-                        data = item.path.read_bytes()
-                        attachment_stat = item.path.stat()
-                    except OSError as exc:
-                        issues.append(AttachmentIssue(item.reference, f"无法读取附件：{item.path}（{exc}）"))
-                        continue
-                    digest = bytes_sha256(data)
-                    assets.setdefault(
-                        digest,
-                        Asset(
-                            digest=digest,
-                            filename=item.path.name,
-                            size=len(data),
-                            source_ref=str(item.path),
-                            _data=data,
-                        ),
-                    )
-                    replacements.append(
-                        (item.reference, canonical_asset_uri(digest, item.path.name), item.path.name)
-                    )
-                    revision_parts.append(f"{item.path}:{attachment_stat.st_mtime_ns}:{attachment_stat.st_size}:{digest}")
-                canonical_body = replace_reference_targets(clean_body, replacements)
-                relative = path.relative_to(self.vault).as_posix()
-                parent = path.parent.relative_to(self.vault).as_posix()
-                folder = "" if parent == "." else normalize_folder(parent)
-                revision = hashlib.sha256("|".join(sorted(revision_parts)).encode("utf-8")).hexdigest()
-                notes.append(
-                    Note(
-                        endpoint=self.endpoint,
-                        native_id=relative,
-                        global_id=metadata.global_id if metadata else "",
-                        title=path.stem,
-                        folder=folder,
-                        body=canonical_body,
-                        tags=tuple(extract_obsidian_tags(raw_body)),
-                        updated=int(stat.st_mtime_ns // 1_000_000),
-                        revision=revision,
-                        locator=relative,
-                        assets=assets,
-                        native={
-                            "path": path,
-                            "raw_body": raw_body,
-                            "metadata_needs_repair": obsidian_metadata_needs_repair(raw_body),
-                            "attachment_issues": [issue.message for issue in issues],
-                        },
-                    )
+                    data = item.path.read_bytes()
+                    attachment_stat = item.path.stat()
+                except OSError as exc:
+                    issues.append(AttachmentIssue(item.reference, f"无法读取附件：{item.path}（{exc}）"))
+                    continue
+                digest = bytes_sha256(data)
+                assets.setdefault(
+                    digest,
+                    Asset(
+                        digest=digest,
+                        filename=item.path.name,
+                        size=len(data),
+                        source_ref=str(item.path),
+                        _data=data,
+                    ),
                 )
+                replacements.append(
+                    (item.reference, canonical_asset_uri(digest, item.path.name), item.path.name)
+                )
+                revision_parts.append(f"{item.path}:{attachment_stat.st_mtime_ns}:{attachment_stat.st_size}:{digest}")
+            canonical_body = replace_reference_targets(clean_body, replacements)
+            relative = path.relative_to(self.vault).as_posix()
+            parent = path.parent.relative_to(self.vault).as_posix()
+            folder = "" if parent == "." else normalize_folder(parent)
+            revision = hashlib.sha256("|".join(sorted(revision_parts)).encode("utf-8")).hexdigest()
+            notes.append(
+                Note(
+                    endpoint=self.endpoint,
+                    native_id=relative,
+                    global_id=metadata.global_id if metadata else "",
+                    title=path.stem,
+                    folder=folder,
+                    body=canonical_body,
+                    tags=tuple(extract_obsidian_tags(raw_body)),
+                    updated=int(stat.st_mtime_ns // 1_000_000),
+                    revision=revision,
+                    locator=relative,
+                    assets=assets,
+                    native={
+                        "path": path,
+                        "raw_body": raw_body,
+                        "metadata_needs_repair": obsidian_metadata_needs_repair(raw_body),
+                        "attachment_issues": [issue.message for issue in issues],
+                    },
+                )
+            )
         return notes
 
     def _target_path(self, folder: str, title: str) -> Path:
         normalized = self.normalize_target_folder(folder)
         directory = self.vault if not normalized else self.vault.joinpath(*normalized.split("/"))
-        return directory / f"{sanitize_filename(title)}.md"
+        target = directory / f"{sanitize_filename(title)}.md"
+        try:
+            target.resolve().relative_to(self.vault)
+        except ValueError as exc:
+            raise AdapterError(f"目标路径位于 Vault 外，已停止写入：{target}") from exc
+        return target
 
     def normalize_target_folder(self, folder: str) -> str:
         normalized = normalize_folder(folder)
         return normalize_folder("/".join(sanitize_filename(part) for part in normalized.split("/") if part))
+
+    def normalize_target_title(self, title: str) -> str:
+        return sanitize_filename(title)
+
+    def target_locator(self, folder: str, title: str) -> str:
+        return super().target_locator(folder, title) + ".md"
 
     def _resolve_target_path(
         self,
@@ -323,7 +353,7 @@ class ObsidianAdapter(NoteAdapter):
             metadata = None
         if metadata and metadata.global_id == global_id:
             return desired
-        return desired.with_name(f"{desired.stem}_{global_id[:8]}{desired.suffix}")
+        raise AdapterError(f"Obsidian 目标路径已有无关笔记，未覆盖：{desired}")
 
     def _atomic_write(self, path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

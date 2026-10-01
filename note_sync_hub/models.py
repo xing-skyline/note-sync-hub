@@ -96,6 +96,18 @@ class OperationAction(str, Enum):
         }[self]
 
 
+class ConflictKind(str, Enum):
+    CONTENT = "content"
+    DELETE_MODIFY = "delete_modify"
+    IDENTITY = "identity"
+    ATTACHMENT = "attachment"
+    PATH = "path"
+
+    @property
+    def blocks_write(self) -> bool:
+        return self in {self.IDENTITY, self.ATTACHMENT, self.PATH}
+
+
 @dataclass
 class Asset:
     digest: str
@@ -144,7 +156,8 @@ class Note:
     @property
     def content_signature(self) -> str:
         normalized_body = self.body.replace("\r\n", "\n").replace("\r", "\n")
-        normalized_body = "\n".join(line.rstrip() for line in normalized_body.split("\n")).strip()
+        # Only normalize final newlines; spaces encode hard breaks and code indentation.
+        normalized_body = normalized_body.rstrip("\n")
         payload = {
             "body": normalized_body,
             "tags": sorted(tag.casefold() for tag in self.tags),
@@ -312,10 +325,21 @@ class SyncOperation:
     reason: str = ""
     state_record: Optional[Dict[str, object]] = field(default=None, repr=False)
     resolved_note: Optional[Note] = field(default=None, repr=False)
-    keep_separate: bool = False
+    conflict_kind: Optional[ConflictKind] = None
+    selected: bool = True
+    target_paths: Dict[Endpoint, str] = field(default_factory=dict)
+
+    @property
+    def can_resolve(self) -> bool:
+        return (
+            self.action == OperationAction.CONFLICT and bool(self.global_id)
+            and self.conflict_kind in {ConflictKind.CONTENT, ConflictKind.DELETE_MODIFY}
+        )
 
     @property
     def executable(self) -> bool:
+        if self.conflict_kind and self.conflict_kind.blocks_write:
+            return False
         if self.action in {OperationAction.CONFLICT, OperationAction.SKIP}:
             return self.resolved_note is not None and bool(self.targets)
         if self.action == OperationAction.DELETE:
@@ -353,7 +377,17 @@ class SyncPlan:
         return counts
 
     def executable_operations(self) -> List[SyncOperation]:
-        return [operation for operation in self.operations if operation.executable]
+        return [operation for operation in self.operations if operation.selected and operation.executable]
+
+
+@dataclass
+class TargetResult:
+    global_id: str
+    title: str
+    endpoint: Endpoint
+    action: OperationAction
+    success: bool
+    error: str = ""
 
 
 @dataclass
@@ -361,3 +395,5 @@ class ExecutionResult:
     completed: int
     skipped: int
     errors: List[str] = field(default_factory=list)
+    targets: List[TargetResult] = field(default_factory=list)
+    cancelled: bool = False

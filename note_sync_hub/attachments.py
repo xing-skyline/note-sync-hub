@@ -246,15 +246,13 @@ def replace_with_joplin_resources(
 
 
 def replace_joplin_resource_links(content: str, local_links: Dict[str, str]) -> str:
-    result = content
-    for resource_id, local_link in local_links.items():
-        result = re.sub(
-            rf":/{re.escape(resource_id)}\b",
-            lambda _match, link=local_link: link,
-            result,
-            flags=re.IGNORECASE,
-        )
-    return result
+    replacements = []
+    for reference in find_attachment_references(content):
+        match = re.fullmatch(r":/([a-fA-F0-9]{32})(?:#.*)?", reference.target)
+        target = local_links.get(match.group(1).lower()) if match else None
+        if target:
+            replacements.append((reference, target, ""))
+    return replace_reference_targets(content, replacements)
 
 
 def replace_reference_targets(

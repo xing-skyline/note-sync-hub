@@ -24,10 +24,17 @@ class StateStore:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
                 payload = json.load(handle)
-        except (OSError, ValueError):
-            return self.empty()
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"同步状态无法读取，已停止同步。请保留该文件并检查备份：{self.path}") from exc
         if not isinstance(payload, dict) or not isinstance(payload.get("groups"), dict):
-            return self.empty()
+            raise ValueError(f"同步状态格式无效，已停止同步：{self.path}")
+        if payload.get("version") != STATE_VERSION:
+            raise ValueError(f"不支持的同步状态版本，已停止同步：{self.path}")
+        for record in payload["groups"].values():
+            if not isinstance(record, dict) or not isinstance(record.get("endpoints"), dict):
+                raise ValueError(f"同步状态中的笔记关联无效，已停止同步：{self.path}")
+            if any(not isinstance(value, dict) for value in record["endpoints"].values()):
+                raise ValueError(f"同步状态中的端点记录无效，已停止同步：{self.path}")
         return payload
 
     def save(self, groups: Dict[str, Dict[str, Any]]) -> None:
@@ -46,7 +53,7 @@ class StateStore:
     def backup(self) -> Optional[Path]:
         if not self.path.is_file():
             return None
-        suffix = datetime.now().strftime("%Y%m%d-%H%M%S")
+        suffix = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         destination = self.path.with_name(f"{self.path.stem}-{suffix}.bak.json")
         destination.write_bytes(self.path.read_bytes())
         return destination

@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import threading
 import uuid
+from copy import deepcopy
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from .adapters import JoplinAdapter, NoteAdapter, ObsidianAdapter, SiYuanAdapter
-from .adapters.base import AdapterError
 from .config import AppConfig
 from .models import (
     ConflictPolicy,
+    ConflictKind,
     Endpoint,
     ExecutionResult,
     Note,
@@ -23,6 +24,7 @@ from .models import (
     normalize_folder,
 )
 from .state import StateStore
+from .planning import resolve_conflict, validate_destinations
 
 
 LogCallback = Callable[[str], None]
@@ -43,6 +45,7 @@ class SyncEngine:
         adapters: Optional[Dict[Endpoint, NoteAdapter]] = None,
         state_store: Optional[StateStore] = None,
         logger: Optional[LogCallback] = None,
+        cancel_event: Optional[threading.Event] = None,
     ):
         self.config = config
         self.adapters: Dict[Endpoint, NoteAdapter] = adapters or {
@@ -52,6 +55,9 @@ class SyncEngine:
         }
         self.state_store = state_store or StateStore(config.state_path())
         self.log = logger or (lambda _message: None)
+        self.cancel_event = cancel_event
+        for adapter in self.adapters.values():
+            adapter.cancel_event = cancel_event
 
     def test_connections(self, endpoints: Iterable[Endpoint]) -> Dict[Endpoint, str]:
         selected = tuple(dict.fromkeys(endpoints))
@@ -76,7 +82,8 @@ class SyncEngine:
         result: Dict[Endpoint, List[Note]] = {}
         for endpoint in selected:
             self.log(f"正在扫描 {endpoint.label}……")
-            result[endpoint] = self.adapters[endpoint].list_notes()
+            self.adapters[endpoint].check_cancelled()
+            result[endpoint] = deepcopy(self.adapters[endpoint].list_notes())
             self.log(f"{endpoint.label} 扫描完成：{len(result[endpoint])} 条笔记。")
         return result
 
@@ -259,6 +266,7 @@ class SyncEngine:
                     SyncOperation(
                         global_id=global_id,
                         action=OperationAction.CONFLICT,
+                        conflict_kind=ConflictKind.IDENTITY,
                         title=candidates[0].title,
                         versions={endpoint: candidates[0]},
                         reason=f"{endpoint.label} 中同步 ID {global_id[:8]}… 重复了 {len(candidates)} 次，请先人工处理。",
@@ -309,6 +317,7 @@ class SyncEngine:
                         SyncOperation(
                             global_id=global_id,
                             action=OperationAction.CONFLICT,
+                            conflict_kind=ConflictKind.IDENTITY,
                             title=note.title,
                             versions={endpoint: note},
                             reason=f"{endpoint.label} 的同步标记与历史状态指向两条不同笔记。",
@@ -385,6 +394,7 @@ class SyncEngine:
                             SyncOperation(
                                 global_id="",
                                 action=OperationAction.CONFLICT,
+                                conflict_kind=ConflictKind.IDENTITY,
                                 title=source.title,
                                 versions={source_endpoint: source, target: candidates[0]},
                                 reason=f"{target.label} 的目标路径存在 {len(candidates)} 条候选笔记，无法安全配对。",
@@ -418,6 +428,7 @@ class SyncEngine:
                         SyncOperation(
                             global_id="",
                             action=OperationAction.CONFLICT,
+                            conflict_kind=ConflictKind.IDENTITY,
                             title=first.title,
                             versions={endpoint: values[0] for endpoint, values in endpoint_candidates.items()},
                             reason="同一路径在至少一个笔记端对应多条笔记，无法安全自动配对。",
@@ -493,6 +504,14 @@ class SyncEngine:
                         state_record=record,
                     )
                 ]
+            if any(self._record_changed(versions[target], self._record_for(record, target)) for target in existing_targets):
+                return [SyncOperation(
+                    global_id=global_id, action=OperationAction.CONFLICT,
+                    conflict_kind=ConflictKind.DELETE_MODIFY,
+                    title=str(source_record.get("title", "已删除笔记")), versions=versions,
+                    reason="来源已删除，但目标端有新修改；请比较后决定是否恢复来源。",
+                    state_record=record,
+                )]
             return [
                 SyncOperation(
                     global_id=global_id,
@@ -516,6 +535,7 @@ class SyncEngine:
                 SyncOperation(
                     global_id=global_id,
                     action=OperationAction.CONFLICT,
+                    conflict_kind=ConflictKind.ATTACHMENT,
                     title=source.title,
                     versions=versions,
                     reason=f"来源笔记存在无法确认的附件，已停止自动覆盖：{attachment_problem}",
@@ -674,6 +694,7 @@ class SyncEngine:
                 SyncOperation(
                     global_id=global_id,
                     action=OperationAction.CONFLICT,
+                    conflict_kind=ConflictKind.CONTENT,
                     title=next(iter(versions.values())).title,
                     versions=versions,
                     reason=reason,
@@ -694,6 +715,7 @@ class SyncEngine:
                 SyncOperation(
                     global_id=global_id,
                     action=OperationAction.CONFLICT,
+                    conflict_kind=ConflictKind.ATTACHMENT,
                     title=next(iter(versions.values())).title,
                     versions=versions,
                     reason=(
@@ -736,6 +758,7 @@ class SyncEngine:
                     SyncOperation(
                         global_id=global_id,
                         action=OperationAction.CONFLICT,
+                        conflict_kind=ConflictKind.DELETE_MODIFY,
                         title=next(iter(versions.values())).title,
                         versions=versions,
                         reason=(
@@ -960,77 +983,27 @@ class SyncEngine:
             else:
                 operations.extend(self._plan_bidirectional(global_id, versions, record, options))
         operations.sort(key=lambda item: (item.title.casefold(), item.action.value, item.global_id))
-        return SyncPlan(
-            options=options,
+        plan = SyncPlan(
+            options=deepcopy(options),
             operations=operations,
             scanned_at=datetime.now(timezone.utc).isoformat(),
             scan_fingerprints=self._fingerprints(notes),
         )
+        validate_destinations(plan, notes, self.adapters)
+        return plan
+
+    def resolve_conflict(self, plan: SyncPlan, operation: SyncOperation, merged: Note) -> None:
+        resolve_conflict(plan, operation, merged)
+        operation.target_paths = {
+            endpoint: self.adapters[endpoint].target_locator(operation.target_folders[endpoint], merged.title)
+            for endpoint in operation.targets
+        }
 
     def _verify_plan_is_fresh(self, plan: SyncPlan) -> Dict[Endpoint, List[Note]]:
         current = self.scan(plan.options.endpoints)
         if self._fingerprints(current) != plan.scan_fingerprints:
             raise SyncEngineError("预览后笔记或附件发生了变化。为防止覆盖，已停止执行，请重新生成同步预览。")
         return current
-
-    @staticmethod
-    def _snapshot_state(
-        notes: Dict[Endpoint, List[Note]],
-        preferred_native_ids: Optional[Dict[str, Dict[Endpoint, str]]] = None,
-    ) -> Dict[str, Dict[str, object]]:
-        groups: Dict[str, Dict[str, object]] = {}
-
-        def save_note(note: Note) -> None:
-            group = groups.setdefault(note.global_id, {"endpoints": {}})
-            endpoints = group["endpoints"]
-            if not isinstance(endpoints, dict):
-                return
-            endpoints[note.endpoint.value] = {
-                "native_id": note.native_id,
-                "title": note.title,
-                "folder": note.folder,
-                "signature": note.content_signature,
-                "revision": note.revision,
-                "updated": note.updated,
-                "locator": note.locator,
-            }
-
-        for endpoint, endpoint_notes in notes.items():
-            for note in endpoint_notes:
-                if not note.global_id:
-                    continue
-                save_note(note)
-
-        if preferred_native_ids:
-            native_indexes = {
-                endpoint: {note.native_id: note for note in endpoint_notes}
-                for endpoint, endpoint_notes in notes.items()
-            }
-            for global_id, endpoint_ids in preferred_native_ids.items():
-                for endpoint, native_id in endpoint_ids.items():
-                    note = native_indexes.get(endpoint, {}).get(native_id)
-                    if note is not None and note.global_id == global_id:
-                        save_note(note)
-        return groups
-
-    @staticmethod
-    def _merge_selected_snapshot(
-        previous: Optional[Dict[str, object]],
-        current: Optional[Dict[str, object]],
-        selected: Iterable[Endpoint],
-    ) -> Optional[Dict[str, object]]:
-        merged = dict(previous) if isinstance(previous, dict) else {}
-        endpoints = dict(SyncEngine._record_endpoints(previous))
-        current_endpoints = SyncEngine._record_endpoints(current)
-        for endpoint in selected:
-            endpoints.pop(endpoint.value, None)
-            value = current_endpoints.get(endpoint.value)
-            if isinstance(value, dict):
-                endpoints[endpoint.value] = value
-        if not endpoints:
-            return None
-        merged["endpoints"] = endpoints
-        return merged
 
     def execute(
         self,
@@ -1039,147 +1012,5 @@ class SyncEngine:
         cancel_event: Optional[threading.Event] = None,
         progress: Optional[ProgressCallback] = None,
     ) -> ExecutionResult:
-        self._verify_plan_is_fresh(plan)
-        executable = plan.executable_operations()
-        if not executable:
-            return ExecutionResult(completed=0, skipped=len(plan.operations))
-
-        loaded_state = self.state_store.load()
-        loaded_groups = loaded_state.get("groups", {}) if isinstance(loaded_state, dict) else {}
-        previous_groups: Dict[str, Dict[str, object]] = {
-            str(global_id): record
-            for global_id, record in loaded_groups.items()
-            if isinstance(record, dict)
-        } if isinstance(loaded_groups, dict) else {}
-
-        for operation in executable:
-            source = operation.source_note
-            if source and operation.action != OperationAction.DELETE:
-                for target in operation.targets:
-                    self.adapters[target].preflight_write(source)
-
-        self.state_store.backup()
-        completed = 0
-        skipped = len(plan.operations) - len(executable)
-        errors: List[str] = []
-        total = len(executable)
-        cancelled = False
-        successful_ids: Set[str] = set()
-        successful_native_ids: Dict[str, Dict[Endpoint, str]] = {}
-        failed_ids: Set[str] = set()
-        blocked_ids: Set[str] = {
-            operation.global_id
-            for operation in plan.operations
-            if operation.global_id and not operation.executable
-        }
-
-        for index, operation in enumerate(executable, start=1):
-            if cancel_event and cancel_event.is_set():
-                skipped += total - index + 1
-                cancelled = True
-                blocked_ids.update(
-                    item.global_id
-                    for item in executable[index - 1 :]
-                    if item.global_id
-                )
-                break
-            if progress:
-                progress(index - 1, total, f"正在处理：{operation.title}")
-            try:
-                operation_native_ids = {
-                    endpoint: note.native_id
-                    for endpoint, note in operation.versions.items()
-                }
-                if operation.action == OperationAction.LINK:
-                    for endpoint, note in operation.versions.items():
-                        if (
-                            note.global_id != operation.global_id
-                            or bool(note.native.get("metadata_needs_repair"))
-                        ):
-                            self.adapters[endpoint].set_global_id(note, operation.global_id)
-                elif operation.action == OperationAction.DELETE:
-                    for target in operation.targets:
-                        note = operation.versions.get(target)
-                        if note:
-                            self.adapters[target].move_to_trash(note)
-                else:
-                    source = operation.source_note
-                    if source is None:
-                        raise SyncEngineError("同步操作缺少已选择的来源版本。")
-                    # 先给来源写入统一 ID。即使后续某个目标写入失败，已经成功
-                    # 的来源/目标仍能在下次预览中恢复为同一组并安全重试。
-                    if source.endpoint not in operation.targets and (
-                        source.global_id != operation.global_id
-                        or bool(source.native.get("metadata_needs_repair"))
-                    ):
-                        self.adapters[source.endpoint].set_global_id(source, operation.global_id)
-                    for target in operation.targets:
-                        existing = operation.versions.get(target)
-                        folder = operation.target_folders.get(target, source.folder)
-                        operation_native_ids[target] = self.adapters[target].upsert_note(
-                            source,
-                            existing,
-                            folder,
-                            operation.global_id,
-                        )
-                completed += 1
-                if operation.global_id:
-                    successful_ids.add(operation.global_id)
-                    successful_native_ids[operation.global_id] = operation_native_ids
-            except (AdapterError, SyncEngineError, OSError, ValueError) as exc:
-                errors.append(f"{operation.title}：{exc}")
-                if operation.global_id:
-                    failed_ids.add(operation.global_id)
-
-        if progress:
-            message = "同步已取消" if cancelled else "正在保存同步状态……"
-            progress(completed, total, message)
-        refreshed = self.scan(plan.options.endpoints)
-        current_snapshot = self._snapshot_state(refreshed, successful_native_ids)
-        final_groups = dict(previous_groups)
-        for global_id in successful_ids - failed_ids - blocked_ids:
-            merged = self._merge_selected_snapshot(
-                final_groups.get(global_id),
-                current_snapshot.get(global_id),
-                plan.options.endpoints,
-            )
-            if merged is not None:
-                final_groups[global_id] = merged
-            else:
-                final_groups.pop(global_id, None)
-
-            # 同一路径孤立副本被重新关联后，清除旧状态中指向同一原生笔记
-            # 的别名，避免旧同步 ID 在后续扫描中继续干扰分组。
-            current_endpoints = self._record_endpoints(current_snapshot.get(global_id))
-            for stale_id, stale_record in list(final_groups.items()):
-                if stale_id == global_id:
-                    continue
-                stale_endpoints = dict(self._record_endpoints(stale_record))
-                changed = False
-                for endpoint in plan.options.endpoints:
-                    current_record = current_endpoints.get(endpoint.value, {})
-                    stale_endpoint_record = stale_endpoints.get(endpoint.value, {})
-                    current_native_id = str(current_record.get("native_id", ""))
-                    if (
-                        current_native_id
-                        and str(stale_endpoint_record.get("native_id", "")) == current_native_id
-                    ):
-                        stale_endpoints.pop(endpoint.value, None)
-                        changed = True
-                if not changed:
-                    continue
-                if stale_endpoints:
-                    cleaned_record = dict(stale_record)
-                    cleaned_record["endpoints"] = stale_endpoints
-                    final_groups[stale_id] = cleaned_record
-                else:
-                    final_groups.pop(stale_id, None)
-        # 第一次同步若只写成了部分目标，仍保存已经落盘的统一 ID，便于
-        # 下次准确补写缺失目标；已有组失败时则保留旧基线以继续提示变化。
-        for global_id in failed_ids:
-            if global_id not in final_groups and global_id in current_snapshot:
-                final_groups[global_id] = current_snapshot[global_id]
-        self.state_store.save(final_groups)
-        if progress:
-            progress(completed, total, "同步完成" if not cancelled else "同步已取消")
-        return ExecutionResult(completed=completed, skipped=skipped, errors=errors)
+        from .execution import execute_plan
+        return execute_plan(self, plan, cancel_event=cancel_event, progress=progress)

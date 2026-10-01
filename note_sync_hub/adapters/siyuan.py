@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
@@ -54,6 +55,7 @@ class SiYuanAdapter(NoteAdapter):
         *,
         binary: bool = False,
     ) -> Any:
+        self.check_cancelled()
         url = f"{self.config.siyuan_api_base.rstrip('/')}/{path.lstrip('/')}"
         headers = {"Authorization": f"Token {self.config.siyuan_token}"}
         try:
@@ -82,7 +84,7 @@ class SiYuanAdapter(NoteAdapter):
             result = response.json()
         except ValueError as exc:
             raise AdapterError("思源笔记返回了无法解析的数据。") from exc
-        if not isinstance(result, dict):
+        if not isinstance(result, dict) or "code" not in result:
             raise AdapterError("思源笔记返回了格式异常的数据。")
         if int(result.get("code", 0) or 0) != 0:
             message = str(result.get("msg", "未知错误"))
@@ -103,6 +105,15 @@ class SiYuanAdapter(NoteAdapter):
 
     def normalize_target_title(self, title: str) -> str:
         return _safe_document_title(title)
+
+    def matches_written(self, actual: Note, source: Note, folder: str) -> bool:
+        if super().matches_written(actual, source, folder):
+            return True
+        # SiYuan Markdown exports may prepend the document title.
+        prefix = f"# {actual.title}\n\n"
+        if actual.body.startswith(prefix):
+            return super().matches_written(replace(actual, body=actual.body[len(prefix):]), source, folder)
+        return False
 
     def _load_notebooks(self, refresh: bool = False) -> Dict[str, str]:
         if self._notebooks is None or refresh:
@@ -130,8 +141,10 @@ class SiYuanAdapter(NoteAdapter):
                 "FROM blocks WHERE type = 'd' AND box != '' "
                 f"ORDER BY hpath, id LIMIT {SQL_PAGE_SIZE} OFFSET {offset}"
             )
-            data = self._request("/api/query/sql", {"stmt": statement}) or []
-            page = [row for row in data if isinstance(row, dict)]
+            data = self._request("/api/query/sql", {"stmt": statement})
+            if not isinstance(data, list) or any(not isinstance(row, dict) or not row.get("id") for row in data):
+                raise AdapterError("思源文档列表不完整，已停止扫描。")
+            page = data
             rows.extend(page)
             if len(page) < SQL_PAGE_SIZE:
                 return rows
@@ -170,14 +183,16 @@ class SiYuanAdapter(NoteAdapter):
         return sorted(folders, key=str.casefold)
 
     def _attrs(self, block_id: str) -> Dict[str, str]:
-        data = self._request("/api/attr/getBlockAttrs", {"id": block_id}) or {}
+        data = self._request("/api/attr/getBlockAttrs", {"id": block_id})
         if not isinstance(data, dict):
-            return {}
+            raise AdapterError(f"思源属性读取不完整，已停止扫描：{block_id}")
         return {str(key): str(value) for key, value in data.items()}
 
     def _export_markdown(self, block_id: str) -> str:
-        data = self._request("/api/export/exportMdContent", {"id": block_id}) or {}
-        return str(data.get("content", "")) if isinstance(data, dict) else ""
+        data = self._request("/api/export/exportMdContent", {"id": block_id})
+        if not isinstance(data, dict) or not isinstance(data.get("content"), str):
+            raise AdapterError(f"思源正文导出不完整，已停止扫描：{block_id}")
+        return data["content"]
 
     @staticmethod
     def _asset_data_path(target: str) -> Optional[str]:
@@ -213,8 +228,16 @@ class SiYuanAdapter(NoteAdapter):
         return tuple(str(tag).strip().lstrip("#") for tag in value if str(tag).strip().lstrip("#"))
 
     def list_notes(self) -> List[Note]:
+        return self._read_rows(self._active_document_rows(self._document_rows()))
+
+    def read_note(self, native_id: str) -> Optional[Note]:
+        rows = [row for row in self._active_document_rows(self._document_rows()) if row.get("id") == native_id]
+        return next(iter(self._read_rows(rows)), None)
+
+    def _read_rows(self, rows) -> List[Note]:
         notes: List[Note] = []
-        for row in self._active_document_rows(self._document_rows()):
+        for row in rows:
+            self.check_cancelled()
             block_id = str(row.get("id", ""))
             if not block_id:
                 continue

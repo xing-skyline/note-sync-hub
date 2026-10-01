@@ -37,6 +37,8 @@ The application has no cloud service, account system, or telemetry. Joplin and S
 
 ## Features
 
+These features describe source version 1.3.0. Files on Releases correspond to their published versions.
+
 | Capability | Details |
 | --- | --- |
 | Two-app or three-app sync | Enable any two or all three of Joplin, Obsidian, and SiYuan |
@@ -117,7 +119,15 @@ Reference: [SiYuan Kernel API](https://github.com/siyuan-note/siyuan/blob/master
 6. Review the operation list and resolve red conflict rows.
 7. Select **Execute safe operations in preview**.
 
+For the current source version, review the source and target paths, check the rows to apply, and select **Execute checked safe operations**. Filtering changes visibility only; hidden checked rows remain selected. Use the buttons above the table to select or clear the visible rows.
+
+Enter a name in the profile bar and save the current sync profile to remember endpoints, direction, scope, folder mappings, deletion policy, and conflict policy. Profiles are scoped to the connection set; the last saved profile is restored on startup. Connection settings can be collapsed for daily use. Tokens remain in `config.json`, separate from the profile file.
+
 Generating a preview does not modify notes. The application rescans immediately before execution and stops if any participating note or attachment changed.
+
+Each note is also checked before writing, and each target is read back before its result is checkpointed. Partial failures report results per target. New edits made during execution are not adopted from a final full-library scan as if they had already been synchronized. Generate a new preview before retrying failed operations.
+
+Incomplete directory scans, corrupt state files, and incomplete API responses stop synchronization. Duplicate IDs, ambiguous target paths, and attachment problems must be repaired before writing; they cannot be bypassed through the content merge dialog. Scans can be cancelled between requests. During execution, cancellation and window closure wait for the current note and its checkpoint to finish.
 
 ## Sync rules
 
@@ -181,11 +191,13 @@ Configuration and synchronization state are stored under the current Windows use
 ```text
 %APPDATA%\NoteSyncHub\
 ├── config.json
+├── profiles.json
 └── state\<endpoint-set-hash>.json
 ```
 
 - `config.json` contains Joplin and SiYuan tokens in plain text. Do not upload or share it.
 - State files contain note IDs, titles, folders, locators, timestamps, and content hashes. They do not contain full note bodies or attachments.
+- `profiles.json` stores named sync options per connection set, without tokens or note content.
 - Runtime logs remain in the current window's memory and are not written to log files. Tokens from the current configuration are redacted.
 - The application has no built-in cloud service, login, analytics, or telemetry.
 - `.gitignore` excludes `config.json`, build directories, and local caches.
@@ -235,8 +247,13 @@ note_sync_hub/
 ├── adapters/        # Joplin, Obsidian, and SiYuan adapters
 ├── attachments.py   # Attachment discovery and internal references
 ├── diffmerge.py     # Block-level Markdown comparison
-├── engine.py        # Matching, planning, conflicts, and safe execution
+├── engine.py        # Scanning, matching, and planning
+├── planning.py      # Destination checks and conflict resolution
+├── execution.py     # Per-target verification and checkpoints
 ├── gui.py           # Windows Tkinter interface
+├── dialogs.py       # Merge and advanced settings dialogs
+├── preview.py       # Path preview, filters, and checkboxes
+├── profiles.py      # Named sync profiles
 ├── metadata.py      # Synchronization markers and tag metadata
 ├── models.py        # Note and operation models
 └── state.py         # Local synchronization baseline
