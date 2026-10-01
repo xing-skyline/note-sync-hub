@@ -23,7 +23,7 @@ from .models import (
     TargetMode,
     normalize_folder,
 )
-from .state import StateStore
+from .state import StateStore, state_fingerprint
 from .planning import resolve_conflict, validate_destinations
 
 
@@ -970,6 +970,10 @@ class SyncEngine:
         return []
 
     def preview(self, options: SyncOptions) -> SyncPlan:
+        with self.state_store.lock():
+            return self._preview_locked(options)
+
+    def _preview_locked(self, options: SyncOptions) -> SyncPlan:
         options.validate()
         self.config.validate(options.endpoints)
         notes = self.scan(options.endpoints)
@@ -988,6 +992,7 @@ class SyncEngine:
             operations=operations,
             scanned_at=datetime.now(timezone.utc).isoformat(),
             scan_fingerprints=self._fingerprints(notes),
+            state_fingerprint=state_fingerprint(state),
         )
         validate_destinations(plan, notes, self.adapters)
         return plan
@@ -1000,6 +1005,8 @@ class SyncEngine:
         }
 
     def _verify_plan_is_fresh(self, plan: SyncPlan) -> Dict[Endpoint, List[Note]]:
+        if state_fingerprint(self.state_store.load()) != plan.state_fingerprint:
+            raise SyncEngineError("预览后同步状态发生了变化，已停止执行，请重新生成同步预览。")
         current = self.scan(plan.options.endpoints)
         if self._fingerprints(current) != plan.scan_fingerprints:
             raise SyncEngineError("预览后笔记或附件发生了变化。为防止覆盖，已停止执行，请重新生成同步预览。")
@@ -1013,4 +1020,5 @@ class SyncEngine:
         progress: Optional[ProgressCallback] = None,
     ) -> ExecutionResult:
         from .execution import execute_plan
-        return execute_plan(self, plan, cancel_event=cancel_event, progress=progress)
+        with self.state_store.lock():
+            return execute_plan(self, plan, cancel_event=cancel_event, progress=progress)

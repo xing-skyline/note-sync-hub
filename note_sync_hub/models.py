@@ -369,6 +369,7 @@ class SyncPlan:
     operations: List[SyncOperation]
     scanned_at: str
     scan_fingerprints: Dict[Endpoint, Dict[str, str]] = field(default_factory=dict, repr=False)
+    state_fingerprint: str = field(default="", repr=False)
 
     def counts(self) -> Dict[str, int]:
         counts: Dict[str, int] = {}

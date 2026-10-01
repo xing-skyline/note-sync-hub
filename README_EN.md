@@ -129,6 +129,10 @@ Each note is also checked before writing, and each target is read back before it
 
 Incomplete directory scans, corrupt state files, and incomplete API responses stop synchronization. Duplicate IDs, ambiguous target paths, and attachment problems must be repaired before writing; they cannot be bypassed through the content merge dialog. Scans can be cancelled between requests. During execution, cancellation and window closure wait for the current note and its checkpoint to finish.
 
+Preview and execution hold a cross-process lock for the same state file. A preview also records the state version and is rejected if another instance changes it. Each checkpoint saves the previous version to `<state-file>.bak` before replacing the main file through a unique temporary file; the first save also creates a backup. Execution additionally keeps a timestamped `.bak.json` snapshot.
+
+A missing main state file with an existing backup stops synchronization instead of starting fresh. To recover, close every synchronization window, preserve the current file and backups separately, verify the backup's connection set, timestamp and current notes, then copy the selected backup to the original state path. Generate and review a new preview after recovery. State backups contain matching metadata, not note bodies, and cannot restore deleted notes.
+
 ## Sync rules
 
 ### One-way sync

@@ -4,6 +4,7 @@ import threading
 import tempfile
 import unittest
 from dataclasses import replace
+from contextlib import nullcontext
 
 from note_sync_hub.adapters.base import AdapterError, NoteAdapter
 from note_sync_hub.config import AppConfig
@@ -44,6 +45,9 @@ def make_note(
 
 
 class MemoryState:
+    def lock(self):
+        return nullcontext()
+
     def __init__(self, groups=None):
         self.groups = groups or {}
         self.saved = None
