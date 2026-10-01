@@ -19,7 +19,8 @@ class StateSafetyTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="note-state-中文 ")
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        # Windows runner TEMP may use an 8.3 alias; match StateStore's canonical path.
+        self.root = Path(temporary.name).resolve()
         self.path = self.root / "state.json"
         self.store = StateStore(self.path)
         self.groups = {"g": {"endpoints": {"joplin": {"native_id": "j"}}}}
