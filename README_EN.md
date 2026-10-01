@@ -37,7 +37,7 @@ The application has no cloud service, account system, or telemetry. Joplin and S
 
 ## Features
 
-These features describe source version 1.3.0. Files on Releases correspond to their published versions.
+These features are available in version 1.3.0.
 
 | Capability | Details |
 | --- | --- |
@@ -74,7 +74,7 @@ Note Sync Hub adds a synchronization marker to notes so that copies can be match
 Open the [latest Release](https://github.com/xing-skyline/note-sync-hub/releases/latest) and download:
 
 ```text
-NoteSyncHub-v1.2.1-windows-x64.exe
+NoteSyncHub-v1.3.0-windows-x64.exe
 ```
 
 The application is a portable single-file EXE. Download `SHA256SUMS.txt` as well if you want to verify the file hash.

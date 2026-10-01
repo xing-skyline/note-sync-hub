@@ -3,12 +3,12 @@
 ## Current status / 当前状态
 
 Note Sync Hub is preparing an application to the SignPath Foundation open-source
-code-signing program. The current `v1.2.0` Release is not code-signed. This
+code-signing program. Current Windows releases are not code-signed. This
 policy describes the controls that apply to future signed Windows releases and
 does not claim that SignPath approval has already been granted.
 
 Note Sync Hub 正在准备申请 SignPath Foundation 开源代码签名计划。当前
-`v1.2.0` Release 尚未进行代码签名。本文说明未来 Windows 签名版本将遵循的
+Windows 发布版本尚未进行代码签名。本文说明未来 Windows 签名版本将遵循的
 控制措施，不表示项目已经获得 SignPath 批准。
 
 Planned signing attribution / 计划使用的签名声明：

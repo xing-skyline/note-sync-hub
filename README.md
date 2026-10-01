@@ -34,7 +34,7 @@ Note Sync Hub 是一个本地运行的 Windows 桌面工具。你可以选择任
 
 ## 功能
 
-以下功能以当前源码版本 1.3.0 为准；Releases 下载文件以实际发布的版本为准。
+以下功能适用于 1.3.0 版本。
 
 | 能力 | 说明 |
 | --- | --- |
@@ -74,7 +74,7 @@ Note Sync Hub 会在笔记中加入同步标记，用于识别同一条笔记在
 打开 [Releases](https://github.com/xing-skyline/note-sync-hub/releases/latest)，下载：
 
 ```text
-NoteSyncHub-v1.2.1-windows-x64.exe
+NoteSyncHub-v1.3.0-windows-x64.exe
 ```
 
 程序为单文件 EXE，无需安装。建议同时下载 `SHA256SUMS.txt` 并核对文件哈希。
