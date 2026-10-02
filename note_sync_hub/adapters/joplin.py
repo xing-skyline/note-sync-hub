@@ -16,7 +16,7 @@ from ..attachments import (
     replace_joplin_resource_links,
 )
 from ..config import AppConfig
-from ..metadata import SyncMetadata, apply_joplin_metadata, extract_joplin_metadata, strip_joplin_metadata
+from ..metadata import extract_joplin_metadata, strip_joplin_metadata
 from ..models import Asset, Endpoint, Note, normalize_folder
 from .base import AdapterError, NoteAdapter, NoteNotFound
 
@@ -295,6 +295,7 @@ class JoplinAdapter(NoteAdapter):
                     assets=assets,
                     native={
                         "raw_body": raw_body,
+                        "has_sync_metadata": metadata is not None,
                         "parent_id": item.get("parent_id", ""),
                         "attachment_issues": attachment_issues,
                     },
@@ -354,8 +355,7 @@ class JoplinAdapter(NoteAdapter):
             if not re.fullmatch(r"[a-fA-F0-9]{32}", resource_id):
                 resource_id = self._upload_resource(asset)
             targets[digest] = f":/{resource_id}"
-        body = replace_canonical_asset_uris(source.body, targets)
-        return apply_joplin_metadata(body, SyncMetadata.create(source.endpoint.value, global_id))
+        return replace_canonical_asset_uris(source.body, targets)
 
     def _sync_tags(self, note_id: str, tags: Iterable[str]) -> None:
         desired = {str(tag).strip() for tag in tags if str(tag).strip()}
@@ -436,11 +436,6 @@ class JoplinAdapter(NoteAdapter):
                 raise AdapterError(f"Joplin 创建笔记失败：{source.title}")
         self._sync_tags(note_id, source.tags)
         return note_id
-
-    def set_global_id(self, note: Note, global_id: str) -> None:
-        raw_body = str(note.native.get("raw_body", "") or note.body)
-        body = apply_joplin_metadata(raw_body, SyncMetadata.create(note.endpoint.value, global_id))
-        self._request("PUT", f"/notes/{note.native_id}", json_data={"body": body})
 
     def move_to_trash(self, note: Note) -> None:
         self._request("DELETE", f"/notes/{note.native_id}")

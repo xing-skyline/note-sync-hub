@@ -694,7 +694,7 @@ class EnginePlannerTests(unittest.TestCase):
         )).operations[0]
         self.assertEqual(operation.action, OperationAction.CONFLICT)
 
-    def test_execute_creates_targets_links_source_and_saves_state(self):
+    def test_execute_creates_targets_and_pairs_untouched_source_in_state(self):
         source = make_note(Endpoint.JOPLIN, native_id="j1")
         engine, adapters, state = self.engine({Endpoint.JOPLIN: [source]})
         options = SyncOptions(
@@ -707,8 +707,10 @@ class EnginePlannerTests(unittest.TestCase):
         self.assertEqual(result.completed, 1)
         self.assertEqual(len(adapters[Endpoint.OBSIDIAN].writes), 1)
         self.assertEqual(len(adapters[Endpoint.SIYUAN].writes), 1)
-        self.assertTrue(source.global_id)
-        self.assertIn(source.global_id, state.saved)
+        self.assertEqual(source.global_id, "")
+        self.assertEqual(adapters[Endpoint.JOPLIN].links, [])
+        self.assertEqual(len(state.saved), 1)
+        self.assertEqual(next(iter(state.saved.values()))["endpoints"]["joplin"]["native_id"], source.native_id)
 
     def test_one_way_success_converges_when_target_normalizes_written_content(self):
         source = make_note(Endpoint.OBSIDIAN, native_id="o1", title="规范化", body="正文\n")
@@ -839,11 +841,12 @@ class EnginePlannerTests(unittest.TestCase):
         self.assertEqual(plan.operations[0].global_id, "current-group")
         self.assertEqual(plan.operations[0].versions[Endpoint.JOPLIN].native_id, "j1")
         self.assertEqual(engine.execute(plan).errors, [])
-        self.assertEqual(adapters[Endpoint.JOPLIN].notes[0].global_id, "current-group")
+        self.assertEqual(adapters[Endpoint.JOPLIN].notes[0].global_id, "orphaned-old-group")
+        self.assertEqual(state.saved["current-group"]["endpoints"]["joplin"]["native_id"], "j1")
         self.assertNotIn("orphaned-old-group", state.saved)
         self.assertEqual(engine.preview(options).operations, [])
 
-    def test_one_way_repairs_malformed_source_metadata_and_converges(self):
+    def test_one_way_adopts_malformed_legacy_source_without_rewriting_it(self):
         global_id = "recoverable-source-id"
         source = make_note(
             Endpoint.OBSIDIAN,
@@ -872,7 +875,7 @@ class EnginePlannerTests(unittest.TestCase):
 
         self.assertEqual([operation.action for operation in plan.operations], [OperationAction.LINK])
         self.assertEqual(engine.execute(plan).errors, [])
-        self.assertEqual(adapters[Endpoint.OBSIDIAN].links, [("o1", global_id)])
+        self.assertEqual(adapters[Endpoint.OBSIDIAN].links, [])
         self.assertEqual(engine.preview(options).operations, [])
 
     def test_pair_sync_preserves_unselected_endpoint_baseline(self):
@@ -957,11 +960,11 @@ class EnginePlannerTests(unittest.TestCase):
         result = engine.execute(engine.preview(options))
         self.assertEqual(result.completed, 0)
         self.assertEqual(len(result.errors), 1)
-        self.assertTrue(source.global_id)
+        self.assertEqual(source.global_id, "")
         self.assertEqual(len(adapters[Endpoint.OBSIDIAN].notes), 1)
-        self.assertIn(source.global_id, state.saved)
+        self.assertEqual(len(state.saved), 1)
         self.assertEqual(
-            set(state.saved[source.global_id]["endpoints"]),
+            set(next(iter(state.saved.values()))["endpoints"]),
             {Endpoint.JOPLIN.value, Endpoint.OBSIDIAN.value},
         )
 

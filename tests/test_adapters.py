@@ -135,7 +135,7 @@ class SiYuanAdapterTests(unittest.TestCase):
 
         self.assertEqual(adapter.list_notes(), [])
 
-    def test_create_builds_parent_document_and_sets_sync_attributes(self):
+    def test_create_builds_parent_document_and_keeps_tags_outside_body(self):
         adapter = StubSiYuanAdapter()
         digest = bytes_sha256(b"asset")
         asset = Asset(digest=digest, filename="图.png", size=5, _data=b"asset")
@@ -151,7 +151,7 @@ class SiYuanAdapterTests(unittest.TestCase):
         self.assertEqual(creates[-1]["markdown"], "![图](assets/uploaded.png)\n")
         attrs = [payload for path, payload, _binary in adapter.calls if path == "/api/attr/setBlockAttrs"]
         self.assertEqual(attrs[0]["attrs"], {CONTAINER_ATTR: "1"})
-        self.assertEqual(attrs[-1]["attrs"][GLOBAL_ID_ATTR], "new-group")
+        self.assertEqual(attrs[-1]["attrs"][GLOBAL_ID_ATTR], "")
         self.assertEqual(attrs[-1]["attrs"][TAGS_ATTR], '["工作"]')
 
     def test_siyuan_delete_moves_document_to_managed_trash(self):
@@ -246,10 +246,6 @@ class StubJoplinAdapter(JoplinAdapter):
 
     def _ensure_notebook(self, folder):
         return "notebook-1"
-
-    def _render_body(self, source, existing, global_id):
-        from note_sync_hub.metadata import apply_joplin_metadata, SyncMetadata
-        return apply_joplin_metadata(source.body, SyncMetadata.create(source.endpoint.value, global_id))
 
     def _sync_tags(self, note_id, tags):
         return None
@@ -422,7 +418,7 @@ class RenderingTests(unittest.TestCase):
         adapter = JoplinAdapter(AppConfig(joplin_token="token"))
         body = adapter._render_body(source, existing, "group")
         self.assertIn(":/0123456789abcdef0123456789abcdef", body)
-        self.assertEqual(extract_joplin_metadata(body).global_id, "group")
+        self.assertIsNone(extract_joplin_metadata(body))
 
     def test_obsidian_write_then_scan_preserves_canonical_signature(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -440,8 +436,10 @@ class RenderingTests(unittest.TestCase):
             adapter.upsert_note(source, None, "A", "group")
             scanned = adapter.list_notes()
             self.assertEqual(len(scanned), 1)
-            self.assertEqual(scanned[0].global_id, "group")
-            self.assertEqual(scanned[0].content_signature, source.content_signature)
+            self.assertEqual(scanned[0].global_id, "")
+            self.assertEqual(scanned[0].body, source.body)
+            self.assertEqual(scanned[0].tags, ())
+            self.assertTrue(adapter.matches_written(scanned[0], source, "A"))
             self.assertTrue((Path(temporary) / "attachments" / "图.png").is_file())
 
 

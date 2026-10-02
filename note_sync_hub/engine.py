@@ -110,9 +110,12 @@ class SyncEngine:
     def _record_changed(note: Note, record: Dict[str, object]) -> bool:
         if not record:
             return True
+        signature = note.content_signature
+        if record.get("signature_version") == 2:
+            signature = note.legacy_content_signature
         return any(
             (
-                str(record.get("signature", "")) != note.content_signature,
+                str(record.get("signature", "")) != signature,
                 str(record.get("title", "")) != note.title,
                 normalize_folder(str(record.get("folder", ""))) != note.folder,
             )
@@ -207,12 +210,36 @@ class SyncEngine:
         used: Dict[Endpoint, Set[str]] = {endpoint: set() for endpoint in options.endpoints}
         diagnostics: List[SyncOperation] = []
 
+        # Local pairings are authoritative; embedded IDs are read only for migration.
+        # File identity also follows Obsidian renames without modifying Markdown.
+        local_ids: Dict[Endpoint, Dict[str, str]] = {ep: {} for ep in options.endpoints}
+        file_indexes = {}
+        for endpoint in options.endpoints:
+            index = defaultdict(list)
+            for note in notes.get(endpoint, []):
+                if note.native.get("file_identity"):
+                    index[note.native["file_identity"]].append(note)
+            file_indexes[endpoint] = index
+        for global_id, record in previous.items():
+            if not isinstance(record, dict):
+                continue
+            for endpoint in options.endpoints:
+                saved = self._record_for(record, endpoint)
+                native_id = str(saved.get("native_id", ""))
+                file_identity = saved.get("file_identity")
+                moved = file_indexes[endpoint].get(file_identity, [])
+                if len(moved) == 1:
+                    native_id = moved[0].native_id
+                if native_id:
+                    local_ids[endpoint][native_id] = global_id
+
         by_global: Dict[Endpoint, Dict[str, List[Note]]] = {}
         for endpoint in options.endpoints:
             endpoint_map: Dict[str, List[Note]] = defaultdict(list)
             for note in notes.get(endpoint, []):
-                if note.global_id:
-                    endpoint_map[note.global_id].append(note)
+                global_id = local_ids[endpoint].get(note.native_id, note.global_id)
+                if global_id:
+                    endpoint_map[global_id].append(note)
             by_global[endpoint] = endpoint_map
 
         # 旧版思源扫描被接口默认截断后，可能在来源的新路径创建了副本，而旧
@@ -295,7 +322,7 @@ class SyncEngine:
                 record = previous.get(global_id)
                 records[global_id] = record if isinstance(record, dict) else None
 
-        # 同步标记丢失时，用上次状态中的原生 ID 恢复关联。
+        # 用上次状态中的原生 ID 恢复关联。
         native_indexes = {
             endpoint: {note.native_id: note for note in notes.get(endpoint, [])}
             for endpoint in options.endpoints
@@ -550,28 +577,22 @@ class SyncEngine:
         creates: List[Endpoint] = []
         content_updates: List[Endpoint] = []
         moves: List[Endpoint] = []
-        needs_link = (
-            source.global_id != global_id
-            or bool(source.native.get("metadata_needs_repair"))
-        )
+        needs_link = not source_record or source_record.get("signature_version") == 2
         for target in options.targets:
             current = versions.get(target)
             if current is None:
                 creates.append(target)
                 continue
-            needs_link = (
-                needs_link
-                or current.global_id != global_id
-                or bool(current.native.get("metadata_needs_repair"))
-            )
+            target_record = self._record_for(record, target)
+            needs_link = needs_link or not target_record or target_record.get("signature_version") == 2
             target_title = self.adapters[target].normalize_target_title(source.title)
             source_unchanged = not self._record_changed(source, source_record)
-            target_record = self._record_for(record, target)
             target_unchanged = not self._record_changed(current, target_record)
             equivalent_baseline = bool(source_record and target_record and source_unchanged and target_unchanged)
-            if not equivalent_baseline and (
-                current.content_signature != source.content_signature or current.title != target_title
-            ):
+            if current.native.get("has_sync_metadata") or (not equivalent_baseline and (
+                not self.adapters[target].matches_written(current, source, current.folder)
+                or current.title != target_title
+            )):
                 content_updates.append(target)
             elif current.folder != target_folders[target]:
                 moves.append(target)
@@ -611,7 +632,7 @@ class SyncEngine:
                     action=OperationAction.LINK,
                     title=source.title,
                     versions=versions,
-                    reason="内容一致，只补写同步标记，不覆盖正文。",
+                    reason="内容一致，只在本地状态文件中建立关联。",
                     state_record=record,
                 )
             ]
@@ -834,7 +855,7 @@ class SyncEngine:
                     action=OperationAction.LINK,
                     title=source.title,
                     versions=versions,
-                    reason="首次配对内容一致，只写入统一同步标记。",
+                    reason="首次配对内容一致，只在本地状态文件中建立关联。",
                 )
             ]
 
@@ -956,14 +977,14 @@ class SyncEngine:
                 )
             ]
 
-        if any(not note.global_id for note in versions.values()):
+        if any(endpoint_records[endpoint].get("signature_version") == 2 for endpoint in versions):
             return [
                 SyncOperation(
                     global_id=global_id,
                     action=OperationAction.LINK,
                     title=next(iter(versions.values())).title,
                     versions=versions,
-                    reason="正文未变化，仅修复缺失的同步标记。",
+                    reason="正文未变化，仅更新本地同步基线。",
                     state_record=record,
                 )
             ]

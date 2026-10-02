@@ -155,11 +155,17 @@ class Note:
 
     @property
     def content_signature(self) -> str:
-        normalized_body = self.body.replace("\r\n", "\n").replace("\r", "\n")
-        # Only normalize final newlines; spaces encode hard breaks and code indentation.
-        normalized_body = normalized_body.rstrip("\n")
+        return self._content_signature(self.body)
+
+    @property
+    def legacy_content_signature(self) -> str:
+        from .metadata import legacy_canonical_body
+        normalized_body = legacy_canonical_body(self.body, self.endpoint.value)
+        return self._content_signature(normalized_body)
+
+    def _content_signature(self, body: str) -> str:
         payload = {
-            "body": normalized_body,
+            "body": body,
             "tags": sorted(tag.casefold() for tag in self.tags),
             "assets": sorted(self.assets),
         }

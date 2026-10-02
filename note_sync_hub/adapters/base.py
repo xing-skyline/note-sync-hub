@@ -66,10 +66,6 @@ class NoteAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def set_global_id(self, note: Note, global_id: str) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
     def move_to_trash(self, note: Note) -> None:
         raise NotImplementedError
 

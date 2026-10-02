@@ -37,7 +37,7 @@ The application has no cloud service, account system, or telemetry. Joplin and S
 
 ## Features
 
-These features are available in version 1.3.0.
+This documentation describes the current source. The published 1.3.0 EXE does not include subsequent source changes.
 
 | Capability | Details |
 | --- | --- |
@@ -47,7 +47,8 @@ These features are available in version 1.3.0.
 | Read-only preview | Review creates, updates, moves, deletions, links, skips, and conflicts before writing |
 | Conflict handling | Merge Markdown block by block; Joplin and Obsidian can also preview a unique latest version |
 | Folder mapping | Preserve source folders, write to selected target folders, or write to target roots |
-| Tags and attachments | Sync tags and convert Joplin Resources, Obsidian attachments, and SiYuan `assets` links |
+| Original Markdown | Preserve source properties, comments, whitespace, and line endings without adding sync headers |
+| Tags and attachments | Keep tags in the original text, sync native tags through app attributes, and convert attachment links; never inject an Obsidian tag header |
 | Safer deletion | Deletion propagation is off by default and uses trash or recycle bins when enabled |
 | Stale-preview protection | Rescan before execution and stop if notes or attachments changed |
 | Cancellation | Stop after the current note finishes |
@@ -65,7 +66,13 @@ flowchart LR
     C -->|Cancel| X["No data changed"]
 ```
 
-Note Sync Hub adds a synchronization marker to notes so that copies can be matched across applications. Its state files store only the information needed for matching; the application does not create a fourth full note library.
+Note Sync Hub matches copies through its local state file. It no longer adds synchronization IDs, timestamps, source comments, or YAML sync headers to notes, and pairing never rewrites the source. State files store matching and comparison information rather than a fourth full note library.
+
+Existing YAML properties (including `tags`), comments, indentation, blank lines, and line endings are preserved. Native app tags are not injected into Obsidian Markdown. In bidirectional sync, editing the Markdown body also preserves native tags that were never represented in that text.
+
+Legacy `notesynchub_*` and `notebridge_*` markers remain readable for migration. In one-way sync, targets containing old sync headers appear as updates; executing them rewrites the target from the source without those markers. Source files are not modified to clean up markers. In bidirectional sync, old headers disappear when that copy is actually rewritten. User-authored YAML fields are retained.
+
+Attachment addresses still require conversion to the target application's resource format, and Obsidian Wiki attachment embeds may become Markdown links. SiYuan imports and exports through its block model, which may normalize Markdown or include the document title. Cross-application sync therefore cannot guarantee byte-for-byte equality for all platform formats; the application does not add sync explanations or reformat ordinary text.
 
 ## Quick start
 
@@ -200,7 +207,7 @@ Configuration and synchronization state are stored under the current Windows use
 ```
 
 - `config.json` contains Joplin and SiYuan tokens in plain text. Do not upload or share it.
-- State files contain note IDs, titles, folders, locators, timestamps, and content hashes. They do not contain full note bodies or attachments.
+- State files contain note IDs, titles, folders, locators, file identities, tags, timestamps, and content hashes. They do not contain full note bodies or attachments. Keep them with your configuration: notes without embedded markers rely on this local pairing history.
 - `profiles.json` stores named sync options per connection set, without tokens or note content.
 - Runtime logs remain in the current window's memory and are not written to log files. Tokens from the current configuration are redacted.
 - The application has no built-in cloud service, login, analytics, or telemetry.
@@ -258,7 +265,7 @@ note_sync_hub/
 ├── dialogs.py       # Merge and advanced settings dialogs
 ├── preview.py       # Path preview, filters, and checkboxes
 ├── profiles.py      # Named sync profiles
-├── metadata.py      # Synchronization markers and tag metadata
+├── metadata.py      # Legacy marker compatibility and tag parsing
 ├── models.py        # Note and operation models
 └── state.py         # Local synchronization baseline
 ```

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+from dataclasses import replace
 from ctypes import wintypes
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -23,11 +24,8 @@ from ..attachments import (
 )
 from ..config import AppConfig
 from ..metadata import (
-    SyncMetadata,
-    apply_obsidian_metadata,
     extract_obsidian_metadata,
     extract_obsidian_tags,
-    obsidian_metadata_needs_repair,
     strip_obsidian_metadata,
 )
 from ..models import Asset, Endpoint, Note, normalize_folder
@@ -257,7 +255,7 @@ class ObsidianAdapter(NoteAdapter):
             if path.is_symlink():
                 continue
             try:
-                raw_body = path.read_text(encoding="utf-8")
+                raw_body = path.read_bytes().decode("utf-8")
                 stat = path.stat()
             except (OSError, UnicodeError) as exc:
                 raise AdapterError(f"无法读取 Obsidian 文件：{path}（{exc}）") from exc
@@ -310,7 +308,8 @@ class ObsidianAdapter(NoteAdapter):
                     native={
                         "path": path,
                         "raw_body": raw_body,
-                        "metadata_needs_repair": obsidian_metadata_needs_repair(raw_body),
+                        "has_sync_metadata": metadata is not None,
+                        "file_identity": f"{stat.st_dev}:{stat.st_ino}" if stat.st_ino else "",
                         "attachment_issues": [issue.message for issue in issues],
                     },
                 )
@@ -336,6 +335,11 @@ class ObsidianAdapter(NoteAdapter):
 
     def target_locator(self, folder: str, title: str) -> str:
         return super().target_locator(folder, title) + ".md"
+
+    def matches_written(self, actual: Note, source: Note, folder: str) -> bool:
+        # Obsidian tags live in Markdown. Do not inject native tags from other apps.
+        expected = replace(source, tags=tuple(extract_obsidian_tags(source.body)))
+        return super().matches_written(actual, expected, folder)
 
     def _resolve_target_path(
         self,
@@ -431,25 +435,10 @@ class ObsidianAdapter(NoteAdapter):
                     continue
             targets[digest] = self._write_attachment(target, asset)
         body = replace_canonical_asset_uris(source.body, targets)
-        content = apply_obsidian_metadata(
-            body,
-            SyncMetadata.create(source.endpoint.value, global_id),
-            source.tags,
-        )
-        self._atomic_write(target, content)
+        self._atomic_write(target, body)
         if existing_path and existing_path.exists() and existing_path.resolve() != target.resolve():
             send_to_recycle_bin(existing_path)
         return target.relative_to(self.vault).as_posix()
-
-    def set_global_id(self, note: Note, global_id: str) -> None:
-        path = Path(note.native.get("path", self.vault / note.native_id))
-        raw_body = str(note.native.get("raw_body", "") or path.read_text(encoding="utf-8"))
-        content = apply_obsidian_metadata(
-            raw_body,
-            SyncMetadata.create(note.endpoint.value, global_id),
-            note.tags,
-        )
-        self._atomic_write(path, content)
 
     def move_to_trash(self, note: Note) -> None:
         path = Path(note.native.get("path", self.vault / note.native_id))

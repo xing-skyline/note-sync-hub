@@ -13,6 +13,10 @@ HTML_FIELD_RE = re.compile(
     r"<!--\s*(?:notesynchub|notebridge)_(id|sync_time|source|version):\s*(.*?)\s*-->",
     re.IGNORECASE,
 )
+HTML_HEADER_RE = re.compile(
+    r"\A(?:<!--[ \t]*(?:notesynchub|notebridge)_(?:id|sync_time|source|version):"
+    r"[^\r\n]*?-->[ \t]*(?:\r?\n|$))+", re.IGNORECASE,
+)
 FRONTMATTER_RE = re.compile(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)", re.DOTALL)
 SYNC_FIELD_RE = re.compile(r"^(?:notesynchub|notebridge)_", re.IGNORECASE)
 SYNC_FRONTMATTER_FIELD_RE = re.compile(
@@ -81,7 +85,8 @@ def _orphan_frontmatter_tags(frontmatter: str) -> List[str]:
 
 
 def extract_joplin_metadata(content: str) -> Optional[SyncMetadata]:
-    values = {key.casefold(): value.strip() for key, value in HTML_FIELD_RE.findall(content or "")}
+    header = HTML_HEADER_RE.match(content or "")
+    values = {key.casefold(): value.strip() for key, value in HTML_FIELD_RE.findall(header.group() if header else "")}
     global_id = values.get("id", "")
     if not global_id:
         return None
@@ -138,8 +143,11 @@ def obsidian_metadata_needs_repair(content: str) -> bool:
 
 
 def strip_joplin_metadata(content: str) -> str:
-    cleaned = HTML_FIELD_RE.sub("", content or "")
-    return re.sub(r"\A[ \t]*(?:\r?\n)+", "", cleaned)
+    header = HTML_HEADER_RE.match(content or "")
+    if not header or not extract_joplin_metadata(content):
+        return content or ""
+    # Old writers inserted exactly one blank separator after the marker lines.
+    return re.sub(r"\A\r?\n", "", content[header.end():], count=1)
 
 
 def _strip_sync_frontmatter(frontmatter: str, *, strip_tags: bool = False) -> str:
@@ -165,16 +173,20 @@ def _strip_sync_frontmatter(frontmatter: str, *, strip_tags: bool = False) -> st
 
 def strip_obsidian_metadata(content: str) -> str:
     frontmatter, body = split_frontmatter(content)
-    if not frontmatter:
+    if not extract_obsidian_metadata(content):
         return content or ""
     if _orphan_frontmatter_tags(frontmatter):
-        return body.lstrip("\r\n")
-    # tags 已作为 Note.tags 单独比较和同步，不能再留在正文签名中，否则
-    # 从 Joplin/思源写入的标签会让 Obsidian 永久显示为“正文有变化”。
-    cleaned = _strip_sync_frontmatter(frontmatter, strip_tags=True)
-    if not cleaned:
-        return body.lstrip("\r\n")
-    return f"---\n{cleaned}\n---\n{body.lstrip(chr(13) + chr(10))}"
+        return body
+    match = FRONTMATTER_RE.match(content)
+    # Remove only known, top-level legacy fields. Never dump/reformat user YAML.
+    cleaned = "".join(
+        line for line in frontmatter.splitlines(keepends=True)
+        if not SYNC_FRONTMATTER_FIELD_RE.fullmatch(line.rstrip("\r\n"))
+    )
+    if not cleaned.strip():
+        return body
+    cleaned = re.sub(r"\r?\n\Z", "", cleaned, count=1)
+    return content[:match.start(1)] + cleaned + content[match.end(1):]
 
 
 def apply_joplin_metadata(content: str, metadata: SyncMetadata) -> str:
@@ -237,3 +249,24 @@ def strip_platform_metadata(content: str, source: str) -> str:
     if source == "obsidian":
         return strip_obsidian_metadata(content)
     return content or ""
+
+
+def legacy_canonical_body(content: str, source: str) -> str:
+    """Reproduce version-2 hashing only; never use this text for writing notes."""
+    from .attachments import canonical_asset_digest, find_attachment_references
+
+    if source == "joplin":
+        content = re.sub(r"\A[ \t]*(?:\r?\n)+", "", HTML_FIELD_RE.sub("", content))
+    elif source == "obsidian":
+        frontmatter, body = split_frontmatter(content)
+        if frontmatter:
+            cleaned = "" if _orphan_frontmatter_tags(frontmatter) else _strip_sync_frontmatter(frontmatter, strip_tags=True)
+            content = (f"---\n{cleaned}\n---\n" if cleaned else "") + body.lstrip("\r\n")
+    # The old attachment renderer also discarded Markdown captions and spacing.
+    for reference in reversed(find_attachment_references(content)):
+        if reference.kind == "markdown" and canonical_asset_digest(reference.target):
+            from urllib.parse import unquote
+            label = reference.label.strip() or unquote(reference.target.rsplit("/", 1)[-1])
+            prefix = "!" if reference.embedded else ""
+            content = content[:reference.start] + f"{prefix}[{label}]({reference.target})" + content[reference.end:]
+    return content.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")

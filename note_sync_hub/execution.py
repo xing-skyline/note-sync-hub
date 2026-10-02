@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from .adapters.base import AdapterError
-from .models import ExecutionResult, OperationAction as Action, TargetResult
+from .models import Endpoint, ExecutionResult, OperationAction as Action, SyncMode, TargetResult
 from .planning import validate_destinations
 
 if TYPE_CHECKING:
@@ -16,8 +17,10 @@ if TYPE_CHECKING:
 def note_record(note: Note) -> dict:
     return {
         "native_id": note.native_id, "title": note.title, "folder": note.folder,
-        "signature": note.content_signature, "signature_version": 2,
+        "signature": note.content_signature, "signature_version": 3,
         "revision": note.revision, "updated": note.updated, "locator": note.locator,
+        "file_identity": note.native.get("file_identity", ""),
+        "tags": list(note.tags),
     }
 
 
@@ -87,9 +90,6 @@ def execute_plan(engine: SyncEngine, plan: SyncPlan, *, cancel_event=None, progr
             for endpoint, version in operation.versions.items():
                 verify_note(engine.adapters[endpoint], version)
             if source and source.endpoint not in targets:
-                original = operation.versions[source.endpoint]
-                if original.global_id != operation.global_id or original.native.get("metadata_needs_repair"):
-                    engine.adapters[source.endpoint].set_global_id(original, operation.global_id)
                 # Retain the confirmed source version, never a later rescan of it.
                 source_record = note_record(source)
             for target in targets:
@@ -104,20 +104,28 @@ def execute_plan(engine: SyncEngine, plan: SyncPlan, *, cancel_event=None, progr
                             raise AdapterError("删除后的副本仍存在，未更新同步状态。")
                         records[target.value] = None
                     elif operation.action == Action.LINK:
-                        if existing.global_id != operation.global_id or existing.native.get("metadata_needs_repair"):
-                            adapter.set_global_id(existing, operation.global_id)
-                        actual = adapter.read_note(existing.native_id)
-                        if actual is None or actual.global_id != operation.global_id or (
-                            actual.content_signature != existing.content_signature
-                            or actual.title != existing.title or actual.folder != existing.folder
-                        ):
-                            raise AdapterError("建立关联期间内容变化，未更新同步状态。")
+                        # The version was just re-read above. Pair only in local state.
                         records[target.value] = note_record(existing)
                     else:
                         folder = operation.target_folders.get(target, source.folder)
-                        native_id = adapter.upsert_note(source, existing, folder, operation.global_id)
+                        write_source = source
+                        if (plan.options.mode == SyncMode.BIDIRECTIONAL
+                                and source.endpoint == Endpoint.OBSIDIAN
+                                and operation.resolved_note is None):
+                            before = engine._record_for(operation.state_record, source.endpoint).get("tags")
+                            target_tags = (existing.tags if existing else
+                                           engine._record_for(operation.state_record, target).get("tags", []))
+                            if isinstance(before, list):
+                                # Markdown contains only some native tags. Apply its
+                                # observable tag edits without deleting hidden ones.
+                                removed = set(before) - set(source.tags)
+                                added = [tag for tag in source.tags if tag not in before]
+                                write_source = replace(source, tags=tuple(
+                                    [tag for tag in target_tags if tag not in removed] + added
+                                ))
+                        native_id = adapter.upsert_note(write_source, existing, folder, operation.global_id)
                         actual = adapter.read_note(native_id)
-                        if actual is None or actual.global_id != operation.global_id or not adapter.matches_written(actual, source, folder):
+                        if actual is None or not adapter.matches_written(actual, write_source, folder):
                             raise AdapterError("写入后的内容与确认版本不符，保留旧基线；请重新预览。")
                         records[target.value] = note_record(actual)
                     successes += 1

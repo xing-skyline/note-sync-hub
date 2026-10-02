@@ -38,7 +38,7 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(extract_joplin_metadata(rendered).global_id, "g1")
         self.assertEqual(strip_joplin_metadata(rendered), body)
 
-    def test_obsidian_managed_tags_are_not_part_of_canonical_body(self):
+    def test_obsidian_tags_are_preserved_when_stripping_legacy_sync_fields(self):
         body = "---\naliases: [别名]\n---\n正文\n"
         rendered = apply_obsidian_metadata(
             body,
@@ -47,7 +47,7 @@ class MetadataTests(unittest.TestCase):
         )
         canonical = strip_obsidian_metadata(rendered)
         self.assertIn("aliases:", canonical)
-        self.assertNotIn("tags:", canonical)
+        self.assertIn("tags: [工作, 资料]", canonical)
         self.assertNotIn("notesynchub_", canonical)
         self.assertTrue(canonical.endswith("正文\n"))
 
@@ -78,7 +78,7 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("tags: [reading, productivity]", repaired)
         self.assertNotIn("\n  - reading\n", repaired)
         self.assertEqual(extract_obsidian_metadata(repaired).global_id, "recovered-id")
-        self.assertEqual(strip_obsidian_metadata(repaired), "正文\n")
+        self.assertEqual(strip_obsidian_metadata(repaired), "---\ntags: [reading, productivity]\n---\n正文\n")
 
 
 class AttachmentTests(unittest.TestCase):

@@ -107,12 +107,18 @@ class SiYuanAdapter(NoteAdapter):
         return _safe_document_title(title)
 
     def matches_written(self, actual: Note, source: Note, folder: str) -> bool:
+        # SiYuan imports/exports Markdown through its block model and normalizes
+        # line endings. This tolerance is deliberately limited to this adapter.
+        actual = replace(actual, body=actual.body.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n"))
+        source = replace(source, body=source.body.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n"))
         if super().matches_written(actual, source, folder):
             return True
         # SiYuan Markdown exports may prepend the document title.
         prefix = f"# {actual.title}\n\n"
         if actual.body.startswith(prefix):
             return super().matches_written(replace(actual, body=actual.body[len(prefix):]), source, folder)
+        if not source.body and actual.body == f"# {actual.title}":
+            return super().matches_written(replace(actual, body=""), source, folder)
         return False
 
     def _load_notebooks(self, refresh: bool = False) -> Dict[str, str]:
@@ -445,15 +451,12 @@ class SiYuanAdapter(NoteAdapter):
         self._set_attrs(
             block_id,
             {
-                GLOBAL_ID_ATTR: global_id,
+                GLOBAL_ID_ATTR: "",
                 TAGS_ATTR: json.dumps(list(source.tags), ensure_ascii=False),
                 CONTAINER_ATTR: "",
             },
         )
         return block_id
-
-    def set_global_id(self, note: Note, global_id: str) -> None:
-        self._set_attrs(note.native_id, {GLOBAL_ID_ATTR: global_id})
 
     def _ensure_trash_container(self) -> str:
         rows = self._document_rows()

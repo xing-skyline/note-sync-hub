@@ -56,6 +56,10 @@ class AttachmentReference:
             return target
         label = self.label.strip() or filename or Path(unquote(target)).name
         if self.kind == "markdown":
+            match = MARKDOWN_LINK_RE.fullmatch(self.original)
+            if match and self.target:
+                start = match.start("destination") + match.group("destination").index(self.target)
+                return self.original[:start] + target + self.original[start + len(self.target):]
             prefix = "!" if self.embedded else ""
             return f"{prefix}[{label}]({target})"
         prefix = "!" if self.embedded else ""

@@ -202,8 +202,10 @@ class SafetyRegressionTests(unittest.TestCase):
         oa.upsert_note = fail_later
         result = engine.execute(engine.preview(self.options))
         self.assertEqual(result.completed, 1)
-        self.assertIn(sources[0].global_id, state.saved)
-        self.assertEqual(state.saved[sources[0].global_id]["endpoints"][E.OBSIDIAN.value]["title"], "A")
+        saved = [group["endpoints"] for group in state.saved.values()
+                 if group["endpoints"][E.JOPLIN.value]["native_id"] == sources[0].native_id]
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0][E.OBSIDIAN.value]["title"], "A")
 
     def test_colliding_normalized_titles_block_both_writes_in_preview(self):
         source = [make_note(E.JOPLIN, native_id=str(i), title=title) for i, title in enumerate(("A:B", "A?B"))]
