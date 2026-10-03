@@ -1,10 +1,13 @@
 from dataclasses import replace
 import base64
 import json
+import tempfile
+from pathlib import Path
 from unittest import TestCase
 from unittest.mock import Mock
 
 from note_sync_hub.adapters.siyuan import ARCHIVE_CONTAINER_ATTR, TRASH_CONTAINER_ATTR, SiYuanAdapter
+from note_sync_hub.adapters.obsidian import ObsidianAdapter
 from note_sync_hub.config import AppConfig
 from note_sync_hub.metadata import strip_embedded_sync_metadata
 from note_sync_hub.siyuan_content import comparable_html
@@ -12,6 +15,22 @@ from tests.test_adapters import StubSiYuanAdapter, source_note
 
 
 class SiYuanFidelityTests(TestCase):
+    def test_stacked_legacy_headers_do_not_hide_original_yaml(self):
+        original = '---\ntitle: Original title\ncreated: 2025-01-01\n---\n\nBody\n'
+        raw = ('---\nnotebridge_id: old\n---\n'
+               '<!-- notesynchub_id: old -->\n'
+               '<!-- notesynchub_source: obsidian -->\n\n' + original)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'note.md'
+            path.write_text(raw, encoding='utf-8', newline='')
+            note = ObsidianAdapter(AppConfig(obsidian_vault_path=temporary)).list_notes()[0]
+            self.assertEqual(note.body, original)
+            target = StubSiYuanAdapter()
+            target.upsert_note(note, None, 'Knowledge/Parent', 'group')
+            creates = [p for route, p, _ in target.calls if route == '/api/filetree/createDocWithMd']
+            self.assertEqual(creates[-1]['markdown'], 'Body\n')
+            self.assertEqual(path.read_bytes(), raw.encode())
+
     def test_archive_is_excluded_without_becoming_the_trash_destination(self):
         adapter = StubSiYuanAdapter()
         rows = [
