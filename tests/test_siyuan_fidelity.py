@@ -4,7 +4,7 @@ import json
 from unittest import TestCase
 from unittest.mock import Mock
 
-from note_sync_hub.adapters.siyuan import SiYuanAdapter
+from note_sync_hub.adapters.siyuan import ARCHIVE_CONTAINER_ATTR, TRASH_CONTAINER_ATTR, SiYuanAdapter
 from note_sync_hub.config import AppConfig
 from note_sync_hub.metadata import strip_embedded_sync_metadata
 from note_sync_hub.siyuan_content import comparable_html
@@ -12,6 +12,17 @@ from tests.test_adapters import StubSiYuanAdapter, source_note
 
 
 class SiYuanFidelityTests(TestCase):
+    def test_archive_is_excluded_without_becoming_the_trash_destination(self):
+        adapter = StubSiYuanAdapter()
+        rows = [
+            {'id': 'archive', 'path': '/archive.sy', 'ial': f'{ARCHIVE_CONTAINER_ATTR}="1"'},
+            {'id': 'saved', 'path': '/archive/saved.sy', 'ial': ''},
+            {'id': 'trash', 'path': '/trash.sy', 'ial': f'{TRASH_CONTAINER_ATTR}="1"'},
+            {'id': 'live', 'path': '/live.sy', 'ial': ''},
+        ]
+        self.assertEqual([r['id'] for r in adapter._active_document_rows(rows)], ['live'])
+        adapter._document_rows = lambda: rows
+        self.assertEqual(adapter._ensure_trash_container(), 'trash')
     def test_placeholder_normalization_keeps_code_and_emoji_joiners(self):
         text = '<p>text\u200b<code>x\u200b</code>👩\u200d💻</p><li>\u200d</li>'
         self.assertEqual(comparable_html(text), '<p>text<code>x\u200b</code>👩\u200d💻</p><li></li>')

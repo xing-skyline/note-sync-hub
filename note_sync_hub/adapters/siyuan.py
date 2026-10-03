@@ -29,6 +29,7 @@ GLOBAL_ID_ATTR = "custom-notesynchub-id"
 TAGS_ATTR = "custom-notesynchub-tags"
 CONTAINER_ATTR = "custom-notesynchub-container"
 TRASH_CONTAINER_ATTR = "custom-notesynchub-trash-container"
+ARCHIVE_CONTAINER_ATTR = "custom-notesynchub-archive-container"
 TRASH_FOLDER_TITLE = "Note Sync Hub 回收站"
 SQL_PAGE_SIZE = 256
 TRASH_FOLDER_BODY = (
@@ -187,6 +188,10 @@ class SiYuanAdapter(NoteAdapter):
     @classmethod
     def _active_document_rows(cls, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         trash_ids = cls._trash_container_ids(rows)
+        trash_ids.update(
+            str(row["id"]) for row in rows
+            if row.get("id") and f'{ARCHIVE_CONTAINER_ATTR}="1"' in str(row.get("ial", ""))
+        )
         if not trash_ids:
             return rows
         active: List[Dict[str, Any]] = []
