@@ -11,6 +11,7 @@ from urllib.parse import unquote, urlparse
 import requests
 
 from ..attachments import (
+    CANONICAL_ASSET_RE,
     attachment_references,
     bytes_sha256,
     canonical_asset_uri,
@@ -20,6 +21,7 @@ from ..attachments import (
 )
 from ..config import AppConfig
 from ..models import Asset, Endpoint, Note, normalize_folder
+from ..siyuan_content import PROPERTY_PREFIX, comparable_html, restore_properties, separate_properties
 from .base import AdapterError, NoteAdapter
 
 
@@ -77,12 +79,18 @@ class SiYuanAdapter(NoteAdapter):
                 raise AdapterError("思源笔记拒绝访问，请检查 API Token。")
             raise AdapterError(f"思源 API 返回 {response.status_code}：{detail}")
         if binary:
+            # getFile serves raw bytes with 200, and API error envelopes with 202.
+            # A JSON file can itself contain code/msg/data; its MIME type is irrelevant.
+            if response.status_code == 200:
+                return response.content
             content_type = response.headers.get("Content-Type", "").casefold()
             if "application/json" not in content_type:
                 return response.content
         try:
             result = response.json()
         except ValueError as exc:
+            if binary:
+                return response.content
             raise AdapterError("思源笔记返回了无法解析的数据。") from exc
         if not isinstance(result, dict) or "code" not in result:
             raise AdapterError("思源笔记返回了格式异常的数据。")
@@ -113,13 +121,24 @@ class SiYuanAdapter(NoteAdapter):
         source = replace(source, body=source.body.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n"))
         if super().matches_written(actual, source, folder):
             return True
-        # SiYuan Markdown exports may prepend the document title.
-        prefix = f"# {actual.title}\n\n"
-        if actual.body.startswith(prefix):
-            return super().matches_written(replace(actual, body=actual.body[len(prefix):]), source, folder)
-        if not source.body and actual.body == f"# {actual.title}":
-            return super().matches_written(replace(actual, body=""), source, folder)
-        return False
+        if (actual.title != self.normalize_target_title(source.title)
+                or actual.folder != self.normalize_target_folder(folder)
+                or set(actual.tags) != set(source.tags)
+                or set(actual.assets) != set(source.assets)):
+            return False
+        actual_body, actual_properties = separate_properties(actual.body)
+        source_body, source_properties = separate_properties(source.body)
+        if actual_properties.get(PROPERTY_PREFIX + "frontmatter") != source_properties.get(PROPERTY_PREFIX + "frontmatter"):
+            return False
+
+        def render(body):
+            body = CANONICAL_ASSET_RE.sub(lambda m: f"notesync-asset://{m.group('digest').lower()}/asset", body)
+            data = self._request("/api/lute/md2html", {"markdown": body})
+            if not isinstance(data, dict) or not isinstance(data.get("html"), str):
+                raise AdapterError("思源 Markdown 格式核验失败，未更新同步状态。")
+            return comparable_html(data["html"])
+
+        return render(actual_body) == render(source_body)
 
     def _load_notebooks(self, refresh: bool = False) -> Dict[str, str]:
         if self._notebooks is None or refresh:
@@ -195,7 +214,7 @@ class SiYuanAdapter(NoteAdapter):
         return {str(key): str(value) for key, value in data.items()}
 
     def _export_markdown(self, block_id: str) -> str:
-        data = self._request("/api/export/exportMdContent", {"id": block_id})
+        data = self._request("/api/export/exportMdContent", {"id": block_id, "yfm": False, "addTitle": False})
         if not isinstance(data, dict) or not isinstance(data.get("content"), str):
             raise AdapterError(f"思源正文导出不完整，已停止扫描：{block_id}")
         return data["content"]
@@ -253,6 +272,10 @@ class SiYuanAdapter(NoteAdapter):
             # 为空判断。带容器标记的文档只用于承载目录层级，不是同步笔记。
             if attrs.get(CONTAINER_ATTR) == "1":
                 continue
+            try:
+                body = restore_properties(body, attrs)
+            except ValueError as exc:
+                raise AdapterError(str(exc)) from exc
 
             notebook = self._notebook_name(str(row.get("box", "")))
             hpath = normalize_folder(str(row.get("hpath", "")))
@@ -416,7 +439,13 @@ class SiYuanAdapter(NoteAdapter):
         notebook_name, parents = self._split_folder(folder)
         title = _safe_document_title(source.title)
         hpath = "/".join([*(_safe_document_title(part) for part in parents), title])
-        body = self._render_body(source, existing)
+        content, property_attrs = separate_properties(source.body)
+        body = self._render_body(replace(source, body=content), existing)
+        previous_attrs = existing.native.get("attrs", {}) if existing else {}
+        property_attrs = {
+            **{key: "" for key in previous_attrs if key.startswith(PROPERTY_PREFIX)},
+            **property_attrs,
+        }
 
         if existing:
             block_id = existing.native_id
@@ -454,6 +483,7 @@ class SiYuanAdapter(NoteAdapter):
                 GLOBAL_ID_ATTR: "",
                 TAGS_ATTR: json.dumps(list(source.tags), ensure_ascii=False),
                 CONTAINER_ATTR: "",
+                **property_attrs,
             },
         )
         return block_id

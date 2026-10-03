@@ -8,6 +8,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
+from .attachments import INLINE_CODE_RE, _fenced_code_ranges
+
 
 HTML_FIELD_RE = re.compile(
     r"<!--\s*(?:notesynchub|notebridge)_(id|sync_time|source|version):\s*(.*?)\s*-->",
@@ -148,6 +150,16 @@ def strip_joplin_metadata(content: str) -> str:
         return content or ""
     # Old writers inserted exactly one blank separator after the marker lines.
     return re.sub(r"\A\r?\n", "", content[header.end():], count=1)
+
+
+def strip_embedded_sync_metadata(content: str) -> str:
+    """Remove legacy transport comments left after YAML or merged note bodies."""
+    ranges = _fenced_code_ranges(content)
+    ranges.extend((match.start(), match.end()) for match in INLINE_CODE_RE.finditer(content))
+    return HTML_FIELD_RE.sub(
+        lambda match: match.group() if any(start <= match.start() < end for start, end in ranges) else "",
+        content,
+    )
 
 
 def _strip_sync_frontmatter(frontmatter: str, *, strip_tags: bool = False) -> str:

@@ -68,11 +68,11 @@ flowchart LR
 
 Note Sync Hub matches copies through its local state file. It no longer adds synchronization IDs, timestamps, source comments, or YAML sync headers to notes, and pairing never rewrites the source. State files store matching and comparison information rather than a fourth full note library.
 
-Existing YAML properties (including `tags`), comments, indentation, blank lines, and line endings are preserved. Native app tags are not injected into Obsidian Markdown. In bidirectional sync, editing the Markdown body also preserves native tags that were never represented in that text.
+Existing YAML properties (including `tags`), comments, indentation, blank lines, and line endings are preserved. In SiYuan, YAML is stored in `custom-obsidian-*` document attributes so it does not appear in the body. A lossless encoded copy restores the original YAML when reading for synchronization. Native app tags are not injected into Obsidian Markdown. In bidirectional sync, editing the Markdown body also preserves native tags that were never represented in that text.
 
 Legacy `notesynchub_*` and `notebridge_*` markers remain readable for migration. In one-way sync, targets containing old sync headers appear as updates; executing them rewrites the target from the source without those markers. Source files are not modified to clean up markers. In bidirectional sync, old headers disappear when that copy is actually rewritten. User-authored YAML fields are retained.
 
-Attachment addresses still require conversion to the target application's resource format, and Obsidian Wiki attachment embeds may become Markdown links. SiYuan imports and exports through its block model, which may normalize Markdown or include the document title. Cross-application sync therefore cannot guarantee byte-for-byte equality for all platform formats; the application does not add sync explanations or reformat ordinary text.
+Attachment addresses still require conversion to the target application's resource format, and Obsidian Wiki attachment embeds may become Markdown links. SiYuan imports and exports through its block model, which may normalize Markdown. Each export explicitly disables generated titles and date properties without changing SiYuan's global export preferences. Cross-application sync cannot guarantee byte-for-byte equality for all platform formats; the application does not add sync explanations or reformat ordinary text.
 
 ## Quick start
 

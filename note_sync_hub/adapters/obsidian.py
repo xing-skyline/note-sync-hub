@@ -27,6 +27,7 @@ from ..metadata import (
     extract_obsidian_metadata,
     extract_obsidian_tags,
     strip_obsidian_metadata,
+    strip_embedded_sync_metadata,
 )
 from ..models import Asset, Endpoint, Note, normalize_folder
 from .base import AdapterError, NoteAdapter
@@ -260,7 +261,7 @@ class ObsidianAdapter(NoteAdapter):
             except (OSError, UnicodeError) as exc:
                 raise AdapterError(f"无法读取 Obsidian 文件：{path}（{exc}）") from exc
             metadata = extract_obsidian_metadata(raw_body)
-            clean_body = strip_obsidian_metadata(raw_body)
+            clean_body = strip_embedded_sync_metadata(strip_obsidian_metadata(raw_body))
             resolved, issues = self._analyze_attachments(path, clean_body)
             assets: Dict[str, Asset] = {}
             replacements = []
