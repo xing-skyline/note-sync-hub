@@ -26,6 +26,7 @@ class Endpoint(str, Enum):
     JOPLIN = "joplin"
     OBSIDIAN = "obsidian"
     SIYUAN = "siyuan"
+    UPNOTE = "upnote"
 
     @property
     def label(self) -> str:
@@ -33,6 +34,7 @@ class Endpoint(str, Enum):
             self.JOPLIN: "Joplin",
             self.OBSIDIAN: "Obsidian",
             self.SIYUAN: "思源笔记",
+            self.UPNOTE: "UpNote",
         }[self]
 
 

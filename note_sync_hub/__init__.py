@@ -1,3 +1,3 @@
-"""Safe synchronization hub for Joplin, Obsidian, and SiYuan."""
+"""Safe synchronization hub for Joplin, Obsidian, SiYuan, and UpNote."""
 
-__version__ = "1.3.0"
+__version__ = "1.4.1"

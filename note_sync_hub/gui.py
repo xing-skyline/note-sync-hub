@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import queue
 import sys
 import threading
@@ -12,12 +13,13 @@ from urllib.parse import quote, quote_plus
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from .config import AppConfig, load_config, save_config
+from .config import AppConfig, discover_upnote_data_dirs, load_config, save_config
 from .dialogs import AdvancedSettingsDialog, DiffDialog
 from .gui_style import configure_style
 from .preview import PreviewPanel
 from .profile_panel import ProfilePanel
 from .adapters.base import ScanCancelled
+from .adapters.upnote import UpNoteAdapter
 from .engine import SyncEngine, SyncEngineError
 from .models import (
     ConflictPolicy,
@@ -33,7 +35,7 @@ from .models import (
 
 MODE_LABELS = {
     "单向同步（一个来源 → 其他所选端）": SyncMode.ONE_WAY,
-    "双向同步（所选两端或三端互相同步）": SyncMode.BIDIRECTIONAL,
+    "双向同步（所选笔记端互相同步）": SyncMode.BIDIRECTIONAL,
 }
 TARGET_MODE_LABELS = {
     "保持来源目录结构": TargetMode.PRESERVE,
@@ -44,6 +46,13 @@ CONFLICT_POLICY_LABELS = {
     "手动比较（最安全）": ConflictPolicy.MANUAL,
     "自动采用最后修改时间最新的版本（仅 Joplin ↔ Obsidian）": ConflictPolicy.LATEST,
 }
+UPNOTE_ALL_NOTEBOOKS = "（全部笔记本）"
+
+
+def upnote_scope_name(label: str) -> str:
+    if label == UPNOTE_ALL_NOTEBOOKS:
+        return ""
+    return label[2:] if label.startswith("仅：") else label.strip()
 
 
 def redact_sensitive_text(text: str, *secrets: str) -> str:
@@ -69,7 +78,7 @@ class SyncApp(tk.Tk):
             self.iconphoto(True, self._app_icon)
         except (OSError, tk.TclError):
             self._app_icon = None
-        self.title("Note Sync Hub — Joplin / Obsidian / 思源安全同步")
+        self.title("Note Sync Hub — Joplin / Obsidian / 思源 / UpNote 安全同步")
         self.geometry("1440x900")
         self.minsize(1100, 700)
         try:
@@ -111,6 +120,9 @@ class SyncApp(tk.Tk):
         self.vault_var = tk.StringVar(value=config.obsidian_vault_path)
         self.siyuan_api_var = tk.StringVar(value=config.siyuan_api_base)
         self.siyuan_token_var = tk.StringVar(value=config.siyuan_token)
+        self.upnote_data_var = tk.StringVar(value=config.upnote_data_dir)
+        self.upnote_notebook_var = tk.StringVar(value="仅：" + config.upnote_notebook if config.upnote_notebook else UPNOTE_ALL_NOTEBOOKS)
+        self._upnote_discovery_key = None
         self.request_timeout = config.request_timeout
         self.obsidian_attachments_folder = config.obsidian_attachments_folder
         self.joplin_default_notebook = config.joplin_default_notebook
@@ -120,11 +132,13 @@ class SyncApp(tk.Tk):
             Endpoint.JOPLIN: tk.BooleanVar(value=True),
             Endpoint.OBSIDIAN: tk.BooleanVar(value=True),
             Endpoint.SIYUAN: tk.BooleanVar(value=True),
+            Endpoint.UPNOTE: tk.BooleanVar(value=False),
         }
         self.target_endpoint_vars = {
             Endpoint.JOPLIN: tk.BooleanVar(value=False),
             Endpoint.OBSIDIAN: tk.BooleanVar(value=True),
             Endpoint.SIYUAN: tk.BooleanVar(value=True),
+            Endpoint.UPNOTE: tk.BooleanVar(value=False),
         }
         self.mode_var = tk.StringVar(value=next(iter(MODE_LABELS)))
         self.source_var = tk.StringVar(value=Endpoint.JOPLIN.label)
@@ -138,7 +152,7 @@ class SyncApp(tk.Tk):
         self.propagate_deletions_var = tk.BooleanVar(value=False)
         self.delete_text_var = tk.StringVar()
         self.delete_hint_var = tk.StringVar()
-        self.status_var = tk.StringVar(value="请先确认三端连接设置，然后测试连接并刷新目录。")
+        self.status_var = tk.StringVar(value="请先确认所选端连接设置，然后测试连接并刷新目录。")
         self.progress_text_var = tk.StringVar(value="就绪")
 
     # ------------------------------------------------------------------ build
@@ -153,7 +167,7 @@ class SyncApp(tk.Tk):
         ttk.Label(header, text="Note Sync Hub", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text="Joplin、Obsidian、思源笔记：先生成只读预览，再执行；冲突默认不会自动覆盖。",
+            text="Joplin、Obsidian、思源笔记、UpNote：先生成只读预览，再执行；冲突默认不会自动覆盖。",
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(1, 0))
 
@@ -200,7 +214,7 @@ class SyncApp(tk.Tk):
         connection.columnconfigure(2, weight=1)
         connection.columnconfigure(4, weight=1)
 
-        for column, label in enumerate(("启用", "笔记端", "地址或目录", "", "Token")):
+        for column, label in enumerate(("启用", "笔记端", "地址或目录", "", "Token / UpNote 范围")):
             ttk.Label(connection, text=label, style="Subtitle.TLabel").grid(
                 row=0, column=column, sticky="w", padx=(0, 7), pady=(0, 3)
             )
@@ -209,6 +223,7 @@ class SyncApp(tk.Tk):
             (Endpoint.JOPLIN, "Joplin", self.joplin_api_var, self.joplin_token_var),
             (Endpoint.OBSIDIAN, "Obsidian", self.vault_var, None),
             (Endpoint.SIYUAN, "思源笔记", self.siyuan_api_var, self.siyuan_token_var),
+            (Endpoint.UPNOTE, "UpNote", self.upnote_data_var, self.upnote_notebook_var),
         )
         for row, (endpoint, label, path_var, token_var) in enumerate(rows, 1):
             check = ttk.Checkbutton(
@@ -217,7 +232,13 @@ class SyncApp(tk.Tk):
             check.grid(row=row, column=0, sticky="w", padx=(0, 7), pady=2)
             self.endpoint_checks[endpoint] = check
             ttk.Label(connection, text=label, width=10).grid(row=row, column=1, sticky="w", padx=(0, 7), pady=2)
-            ttk.Entry(connection, textvariable=path_var).grid(row=row, column=2, sticky="ew", pady=2)
+            if endpoint == Endpoint.UPNOTE:
+                self.upnote_data_entry = ttk.Combobox(connection, textvariable=path_var)
+                self.upnote_data_entry.grid(row=row, column=2, sticky="ew", pady=2)
+                self.upnote_data_entry.bind('<<ComboboxSelected>>', lambda _e: self._upnote_location_changed())
+                self.upnote_data_entry.bind('<FocusOut>', lambda _e: self._discover_upnote())
+            else:
+                ttk.Entry(connection, textvariable=path_var).grid(row=row, column=2, sticky="ew", pady=2)
             if endpoint == Endpoint.OBSIDIAN:
                 ttk.Button(connection, text="选择…", command=self._choose_vault).grid(
                     row=row, column=3, sticky="w", padx=6, pady=2
@@ -225,16 +246,27 @@ class SyncApp(tk.Tk):
                 ttk.Label(connection, text="本地 Vault，无需 Token", style="Subtitle.TLabel").grid(
                     row=row, column=4, sticky="w", pady=2
                 )
+            elif endpoint == Endpoint.UPNOTE:
+                buttons = ttk.Frame(connection)
+                buttons.grid(row=row, column=3, sticky="w", padx=6, pady=2)
+                ttk.Button(buttons, text="自动", width=4, command=lambda: self._discover_upnote(force=True)).pack(side='left')
+                ttk.Button(buttons, text="选择…", width=6, command=self._choose_upnote).pack(side='left')
+                self.upnote_scope_combo = ttk.Combobox(connection, textvariable=token_var, state='readonly',
+                    values=[UPNOTE_ALL_NOTEBOOKS], postcommand=lambda: self._discover_upnote(force=True))
+                self.upnote_scope_combo.grid(row=row, column=4, sticky="ew", pady=2)
+                self.upnote_scope_combo.bind('<<ComboboxSelected>>', lambda _e: self._upnote_location_changed())
             else:
                 ttk.Label(connection, text="").grid(row=row, column=3, padx=6)
                 ttk.Entry(connection, textvariable=token_var, show="•").grid(row=row, column=4, sticky="ew", pady=2)
 
         actions = ttk.Frame(connection)
-        actions.grid(row=1, column=5, rowspan=3, sticky="nsew", padx=(10, 0))
+        actions.grid(row=1, column=5, rowspan=4, sticky="nsew", padx=(10, 0))
         self.test_button = ttk.Button(actions, text="测试所选连接", command=self._test_connections)
         self.test_button.pack(fill="x")
         ttk.Button(actions, text="高级设置…", command=self._advanced_settings).pack(fill="x", pady=(5, 0))
         ttk.Button(actions, text="保存设置", command=self._save_settings).pack(fill="x", pady=(5, 0))
+        ttk.Label(connection, text="UpNote：启用后自动识别目录和笔记本，在下方选择同步范围；写入前用 Ctrl+Q 完全退出。",
+                  style="Subtitle.TLabel", wraplength=650).grid(row=5, column=0, columnspan=6, sticky="w", pady=(5, 0))
 
     def _build_options(self, parent: ttk.Frame) -> None:
         options = ttk.LabelFrame(parent, text="2. 同步方式、范围与安全选项", padding=8)
@@ -410,6 +442,8 @@ class SyncApp(tk.Tk):
         return tuple(ep for ep in Endpoint if ep == source or ep in targets)
 
     def _toggle_options(self) -> None:
+        if self.endpoint_vars[Endpoint.UPNOTE].get():
+            self._discover_upnote()
         enabled_endpoints = self._enabled_endpoints()
         values = [ep.label for ep in enabled_endpoints]
         self.source_combo.configure(values=values)
@@ -454,7 +488,7 @@ class SyncApp(tk.Tk):
                 check.configure(state="normal" if one_way else "disabled")
         if one_way:
             self.delete_text_var.set("将来源端的删除同步到目标端（危险，默认关闭）")
-            self.delete_hint_var.set("Joplin 用废纸篓，Obsidian 用系统回收站，思源移入统一回收站。")
+            self.delete_hint_var.set("Joplin、UpNote 用应用回收站，Obsidian 用系统回收站，思源移入统一回收站。")
         else:
             self.delete_text_var.set("将双向主端的删除同步到其他端（危险，默认关闭）")
             self.delete_hint_var.set("非主端删除会恢复；思源副本移入统一的 Note Sync Hub 回收站。")
@@ -474,6 +508,8 @@ class SyncApp(tk.Tk):
             obsidian_vault_path=self.vault_var.get().strip(),
             siyuan_api_base=self.siyuan_api_var.get().strip().rstrip("/"),
             siyuan_token=self.siyuan_token_var.get().strip(),
+            upnote_data_dir=self.upnote_data_var.get().strip(),
+            upnote_notebook=upnote_scope_name(self.upnote_notebook_var.get()),
             request_timeout=self.request_timeout,
             obsidian_attachments_folder=self.obsidian_attachments_folder,
             joplin_default_notebook=self.joplin_default_notebook,
@@ -566,6 +602,53 @@ class SyncApp(tk.Tk):
         if selected:
             self.vault_var.set(selected)
 
+    def _choose_upnote(self) -> None:
+        selected = filedialog.askdirectory(
+            title="选择包含 upnote.sqlite3 的 UpNote 数据目录",
+            initialdir=self.upnote_data_var.get() or str(Path(os.environ.get("APPDATA", "~")) / "UpNote"),
+        )
+        if selected:
+            self.upnote_data_var.set(selected)
+            self._upnote_location_changed()
+
+    def _upnote_location_changed(self) -> None:
+        self._populate_folders(Endpoint.UPNOTE, [], ())
+        self.target_folder_vars[Endpoint.UPNOTE].set('')
+        self._discover_upnote(force=True)
+        self._toggle_options()
+
+    def _discover_upnote(self, *, force=False) -> None:
+        if self._busy:
+            return
+        key = (self.upnote_data_var.get().strip(), upnote_scope_name(self.upnote_notebook_var.get()))
+        if not force and self._upnote_discovery_key == key:
+            return
+        self._upnote_discovery_key = key
+        try:
+            if not key[0]:
+                found = discover_upnote_data_dirs()
+                self.upnote_data_entry.configure(values=found)
+                if len(found) != 1:
+                    self.status_var.set('发现多个 UpNote 数据目录，请从目录下拉列表选择。' if found else '未自动找到 UpNote 数据，请先在 UpNote 登录并同步，或手动选择数据目录。')
+                    return
+                self.upnote_data_var.set(found[0])
+            config = self._collect_config()
+            adapter = UpNoteAdapter(config)
+            names = adapter.list_top_level_notebooks()
+            labels = [UPNOTE_ALL_NOTEBOOKS, *('仅：' + name for name in names)]
+            if config.upnote_notebook and self.upnote_notebook_var.get() not in labels:
+                labels.append(self.upnote_notebook_var.get())
+            self.upnote_scope_combo.configure(values=labels)
+            folders = adapter.list_folders()
+            selected = self._selected_folders(Endpoint.UPNOTE)
+            list_state = self.folder_lists[Endpoint.UPNOTE].cget('state')
+            self._populate_folders(Endpoint.UPNOTE, sorted(set(folders) | set(selected), key=str.casefold), selected)
+            self.folder_lists[Endpoint.UPNOTE].configure(state=list_state)
+            self._upnote_discovery_key = (config.upnote_data_dir, config.upnote_notebook)
+            self.status_var.set(f'已读取 UpNote：{len(names)} 个顶层笔记本，可在目录列表选择同步范围。')
+        except Exception as exc:
+            self.status_var.set(f'UpNote 自动读取未完成：{exc}')
+
     def _advanced_settings(self) -> None:
         dialog = AdvancedSettingsDialog(self, self._collect_config())
         self.wait_window(dialog)
@@ -610,6 +693,8 @@ class SyncApp(tk.Tk):
         messagebox.showinfo("连接测试完成", message, parent=self)
 
     def _refresh_folders(self) -> None:
+        if self.endpoint_vars[Endpoint.UPNOTE].get():
+            self._discover_upnote(force=True)
         endpoints = self._sync_endpoints()
         if not endpoints:
             messagebox.showwarning("未选择笔记端", "请先选择要读取目录的笔记端。", parent=self)

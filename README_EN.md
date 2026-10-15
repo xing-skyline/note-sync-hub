@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/app-icon.png" alt="Note Sync Hub icon" width="128">
   <h1>Note Sync Hub</h1>
-  <p>Safely sync Markdown notes across Joplin, Obsidian, and SiYuan.</p>
+  <p>Sync notes across Joplin, Obsidian, SiYuan, and UpNote.</p>
   <p><a href="README.md">简体中文</a> · <strong>English</strong></p>
   <p>
     <a href="https://github.com/xing-skyline/note-sync-hub/releases/latest"><img src="https://img.shields.io/github/v/release/xing-skyline/note-sync-hub?display_name=tag&sort=semver" alt="Latest release"></a>
@@ -18,7 +18,7 @@
 
 ## What it is
 
-Note Sync Hub is a local Windows desktop application. Select any two or all three supported note apps, inspect a complete read-only preview, and choose whether to run the sync.
+Note Sync Hub is a local Windows desktop application. Select two to four supported note apps, inspect a complete read-only preview, and choose whether to run the sync.
 
 It is useful when you want to:
 
@@ -37,17 +37,17 @@ The application has no cloud service, account system, or telemetry. Joplin and S
 
 ## Features
 
-This documentation describes the current source. The published 1.3.0 EXE does not include subsequent source changes.
+This documentation describes version 1.4.1, including UpNote integration and automatic discovery.
 
 | Capability | Details |
 | --- | --- |
-| Two-app or three-app sync | Enable any two or all three of Joplin, Obsidian, and SiYuan |
-| One-way sync | Choose one source and one or two targets |
+| Multi-app sync | Enable two to four of Joplin, Obsidian, SiYuan, and UpNote |
+| One-way sync | Choose one source and one to three targets |
 | Bidirectional sync | Every selected app can create or update notes; a primary app controls deletion direction |
 | Read-only preview | Review creates, updates, moves, deletions, links, skips, and conflicts before writing |
 | Conflict handling | Merge Markdown block by block; Joplin and Obsidian can also preview a unique latest version |
 | Folder mapping | Preserve source folders, write to selected target folders, or write to target roots |
-| Original Markdown | Preserve source properties, comments, whitespace, and line endings without adding sync headers |
+| Original Markdown | No sync headers; Markdown endpoints preserve source text, while UpNote uses HTML conversion with the limitations below |
 | Tags and attachments | Keep tags in the original text, sync native tags through app attributes, and convert attachment links; never inject an Obsidian tag header |
 | Safer deletion | Deletion propagation is off by default and uses trash or recycle bins when enabled |
 | Stale-preview protection | Rescan before execution and stop if notes or attachments changed |
@@ -60,15 +60,16 @@ flowchart LR
     J["Joplin<br>Data API"] <--> H["Note Sync Hub"]
     O["Obsidian<br>Local Vault"] <--> H
     S["SiYuan<br>Kernel API"] <--> H
+    U["UpNote<br>Local writes while exited"] <--> H
     H --> P["Read-only preview"]
     P --> C{"User confirmation"}
     C -->|Run| W["Write to selected apps"]
     C -->|Cancel| X["No data changed"]
 ```
 
-Note Sync Hub matches copies through its local state file. It no longer adds synchronization IDs, timestamps, source comments, or YAML sync headers to notes, and pairing never rewrites the source. State files store matching and comparison information rather than a fourth full note library.
+Note Sync Hub matches copies through its local state file. It no longer adds synchronization IDs, timestamps, source comments, or YAML sync headers to notes, and pairing never rewrites the source. State files store matching and comparison information rather than an additional full note library.
 
-Existing YAML properties (including `tags`), comments, indentation, blank lines, and line endings are preserved. In SiYuan, YAML is stored in `custom-obsidian-*` document attributes so it does not appear in the body. A lossless encoded copy restores the original YAML when reading for synchronization. Native app tags are not injected into Obsidian Markdown. In bidirectional sync, editing the Markdown body also preserves native tags that were never represented in that text.
+Outside UpNote, existing YAML properties (including `tags`), comments, indentation, blank lines, and line endings are preserved. In SiYuan, YAML is stored in `custom-obsidian-*` document attributes so it does not appear in the body. A lossless encoded copy restores the original YAML when reading for synchronization. Native app tags are not injected into Obsidian Markdown. In bidirectional sync, editing the Markdown body also preserves native tags that were never represented in that text.
 
 Legacy `notesynchub_*` and `notebridge_*` markers remain readable for migration. In one-way sync, targets containing old sync headers appear as updates; executing them rewrites the target from the source without those markers. Source files are not modified to clean up markers. In bidirectional sync, old headers disappear when that copy is actually rewritten. User-authored YAML fields are retained.
 
@@ -81,7 +82,7 @@ Attachment addresses still require conversion to the target application's resour
 Open the [latest Release](https://github.com/xing-skyline/note-sync-hub/releases/latest) and download:
 
 ```text
-NoteSyncHub-v1.3.0-windows-x64.exe
+NoteSyncHub-v1.4.1-windows-x64.exe
 ```
 
 The application is a portable single-file EXE. Download `SHA256SUMS.txt` as well if you want to verify the file hash.
@@ -116,6 +117,16 @@ Select the Vault root folder. No Obsidian plugin is required. The scanner exclud
 
 Reference: [SiYuan Kernel API](https://github.com/siyuan-note/siyuan/blob/master/API.md)
 
+#### UpNote (Windows local adapter)
+
+The bundled adapter has been verified with **UpNote 9.22.6**. It uses the local database, not an official UpNote synchronization API. Compatibility with later versions needs verification. No MCP server, AI tool, personal Skill, or CC Switch installation is required.
+
+Enable UpNote to automatically detect its data directory, usually `%APPDATA%\UpNote`. A unique location is filled in; multiple candidates are offered for selection, and an existing manual location is never replaced. Top-level notebooks and their descendants in the default space are loaded into the standard folder selector. Choose scope, direction, and target folders using the same workflow as the other apps. Unfiled notes map to the root; missing destination notebooks are created on write. The optional scope dropdown can restrict synchronization to one discovered top-level notebook. Existing single-notebook configurations keep their scope and relative paths. Reads and previews work while UpNote is open. Before writing, moving, or trashing notes, **exit UpNote completely with Ctrl+Q**. The hub refuses writes while it runs and never controls the desktop or closes/restarts the app. Reopen UpNote yourself afterwards; UpNote handles its own cloud sync. A successful local readback does not verify another device.
+
+Ordinary text, headings, common lists, code, images, and locally available attachments are supported; new attachments must be at most 20 MiB each. Updates retain note IDs and repeated runs use local pairing state. HTML conversion can normalize Markdown formatting and whitespace. YAML frontmatter, task lists, and unsupported rich HTML are rejected for writes. Existing rich notes or unrecognized resources are protected from body replacement. Locked notebooks and multiple memberships within the selected scope are rejected. Missing local attachment files stop scanning.
+
+Each write first creates a database snapshot under `Note Sync Hub Backups/<timestamp>/upnote.sqlite3` in the data directory, then applies a transaction. Existing attachment files are retained; backups and orphaned attachments are not automatically removed. Exit UpNote and preserve the current database, WAL/SHM, and attachment files before a manual recovery. Database snapshots are not attachment backups.
+
 ### 3. Preview and sync
 
 1. Enable the note apps you want to use and enter the API addresses, Vault, and tokens.
@@ -144,7 +155,7 @@ A missing main state file with an existing backup stops synchronization instead 
 
 ### One-way sync
 
-Choose one source and one or two targets. The destination can use one of three mappings:
+Choose one source and one to three targets. The destination can use one of three mappings:
 
 | Mapping | Example result |
 | --- | --- |
@@ -152,7 +163,7 @@ Choose one source and one or two targets. The destination can use one of three m
 | Place under a selected target folder | `Archive/B/A/Subfolder/Meeting notes` |
 | Place under the target root | `A/Subfolder/Meeting notes` |
 
-### Bidirectional and three-app sync
+### Bidirectional and multi-app sync
 
 Every selected app can create or update notes. The primary app determines deletion propagation and the default conflict reference; it is not a fixed write source.
 

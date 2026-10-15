@@ -1,4 +1,6 @@
 import tempfile
+from contextlib import closing
+import sqlite3
 import tkinter as tk
 import unittest
 from pathlib import Path
@@ -18,7 +20,15 @@ class GuiWorkflowTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.config = AppConfig(obsidian_vault_path=self.directory.name, joplin_token="test", siyuan_token="test")
         self.store = ProfileStore(Path(self.directory.name) / "profiles.json")
+        original_init = tk.Tk.__init__
+
+        def hidden_init(root, *args, **kwargs):
+            original_init(root, *args, **kwargs)
+            root.withdraw()
+
         for mock in (patch("note_sync_hub.gui.load_config", return_value=self.config),
+                     patch.object(tk.Tk, '__init__', hidden_init),
+                     patch.object(SyncApp, 'state', return_value='withdrawn'),
                      patch("note_sync_hub.profile_panel.ProfileStore", return_value=self.store),
                      patch("note_sync_hub.profile_panel.save_config")):
             mock.start()
@@ -42,6 +52,50 @@ class GuiWorkflowTests(unittest.TestCase):
         self.assertEqual(self.app._collect_options(), options)
         self.app._folders_done({E.OBSIDIAN: ["", "A", "A/B"], E.SIYUAN: ["Archive"]})
         self.assertEqual(self.app._collect_options(), options)
+
+    def test_upnote_connection_and_bidirectional_selection(self):
+        self.assertFalse(self.app.endpoint_vars[E.UPNOTE].get())
+        self.app.upnote_data_var.set('C:/test/UpNote')
+        self.app.upnote_notebook_var.set('同步笔记本')
+        config = self.app._collect_config()
+        self.assertEqual(config.upnote_notebook, '同步笔记本')
+        self.assertEqual(config.upnote_data_dir, 'C:/test/UpNote')
+        options = SyncOptions(SyncMode.BIDIRECTIONAL, (E.OBSIDIAN, E.UPNOTE), primary=E.UPNOTE,
+                              selected_folders={E.OBSIDIAN: (), E.UPNOTE: ()})
+        self.app._apply_options(options)
+        self.assertEqual(self.app._collect_options(), options)
+
+    def test_upnote_enable_auto_fills_location_and_notebook_folders(self):
+        data = Path(self.directory.name) / 'UpNote'
+        data.mkdir()
+        db = data / 'upnote.sqlite3'
+        with closing(sqlite3.connect(db)) as c:
+            c.executescript((Path(__file__).parent/'fixtures/upnote-9.22-schema.sql').read_text(encoding='utf-8'))
+            c.execute("INSERT INTO notebooks(id,title,deleted) VALUES('book','自动读取的笔记本',0)")
+            c.commit()
+        before = db.read_bytes()
+        with patch('note_sync_hub.gui.discover_upnote_data_dirs', return_value=[str(data)]):
+            self.app.endpoint_vars[E.UPNOTE].set(True)
+            self.app._toggle_options()
+        self.assertEqual(self.app._collect_config().upnote_data_dir, str(data))
+        self.assertEqual(self.app._collect_config().upnote_notebook, '')
+        self.assertIn('自动读取的笔记本', self.app.folder_values[E.UPNOTE])
+        self.assertIn('仅：自动读取的笔记本', self.app.upnote_scope_combo['values'])
+        self.app._discover_upnote(force=True)
+        self.assertEqual(str(self.app.folder_lists[E.UPNOTE]['state']), 'disabled')
+        self.assertEqual(db.read_bytes(), before)
+
+    def test_auto_detect_preserves_manual_location_and_ambiguous_choices(self):
+        self.app.upnote_data_var.set('D:/custom-data')
+        with patch('note_sync_hub.gui.discover_upnote_data_dirs') as detect:
+            self.app._discover_upnote(force=True)
+            detect.assert_not_called()
+        self.assertEqual(self.app.upnote_data_var.get(), 'D:/custom-data')
+        self.app.upnote_data_var.set('')
+        with patch('note_sync_hub.gui.discover_upnote_data_dirs', return_value=['D:/one','D:/two']):
+            self.app._discover_upnote(force=True)
+        self.assertEqual(self.app.upnote_data_var.get(), '')
+        self.assertIn('多个', self.app.status_var.get())
 
     def test_filter_and_checkbox_preserve_hidden_row_selection(self):
         source = make_note(E.JOPLIN, native_id="j")

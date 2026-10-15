@@ -25,6 +25,27 @@ def default_config_path() -> Path:
     return app_data_dir() / "config.json"
 
 
+def discover_upnote_data_dirs() -> list[str]:
+    """Inspect known per-user locations only; never create or scan a whole drive."""
+    candidates = []
+    if os.environ.get("APPDATA"):
+        candidates.append(Path(os.environ["APPDATA"]) / "UpNote")
+    candidates.append(Path.home() / "AppData/Roaming/UpNote")
+    if os.environ.get("LOCALAPPDATA"):
+        packages = Path(os.environ["LOCALAPPDATA"]) / "Packages"
+        if packages.is_dir():
+            candidates.extend(path / "LocalCache/Roaming/UpNote" for path in packages.glob("*UpNote*"))
+    found = []
+    seen = set()
+    for candidate in candidates:
+        if (candidate / "upnote.sqlite3").is_file():
+            resolved = str(candidate.resolve())
+            if resolved.casefold() not in seen:
+                found.append(resolved)
+                seen.add(resolved.casefold())
+    return found
+
+
 @dataclass
 class AppConfig:
     joplin_api_base: str = "http://127.0.0.1:41184"
@@ -36,6 +57,8 @@ class AppConfig:
     obsidian_attachments_folder: str = "attachments"
     joplin_default_notebook: str = "Note Sync Hub"
     siyuan_default_notebook: str = "Note Sync Hub"
+    upnote_data_dir: str = ""
+    upnote_notebook: str = ""  # Empty: discover all notebooks in the default space.
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppConfig":
@@ -70,6 +93,11 @@ class AppConfig:
                 raise ValueError("请填写思源 API 地址。")
             if not self.siyuan_token.strip():
                 raise ValueError("请填写思源 API Token。")
+        if Endpoint.UPNOTE in selected:
+            if not self.upnote_data_dir.strip():
+                raise ValueError("请选择 UpNote 数据目录。")
+            if not (Path(self.upnote_data_dir).expanduser() / "upnote.sqlite3").is_file():
+                raise ValueError("UpNote 数据目录中没有 upnote.sqlite3。")
 
     def state_path(self) -> Path:
         vault_identity = (
@@ -84,6 +112,10 @@ class AppConfig:
                 self.siyuan_api_base.casefold(),
             ]
         )
+        # Empty UpNote settings retain every existing three-endpoint state path.
+        if self.upnote_data_dir.strip():
+            identity += "|upnote|" + str(Path(self.upnote_data_dir).expanduser().resolve()).casefold()
+            identity += "|" + self.upnote_notebook.strip()
         digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
         return app_data_dir() / "state" / f"{digest}.json"
 

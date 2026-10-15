@@ -7,7 +7,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from .adapters import JoplinAdapter, NoteAdapter, ObsidianAdapter, SiYuanAdapter
+from .adapters import JoplinAdapter, NoteAdapter, ObsidianAdapter, SiYuanAdapter, UpNoteAdapter
 from .config import AppConfig
 from .models import (
     ConflictPolicy,
@@ -36,7 +36,7 @@ class SyncEngineError(RuntimeError):
 
 
 class SyncEngine:
-    """只读规划与显式执行分离的三端同步核心。"""
+    """只读规划与显式执行分离的多端同步核心。"""
 
     def __init__(
         self,
@@ -52,6 +52,7 @@ class SyncEngine:
             Endpoint.JOPLIN: JoplinAdapter(config),
             Endpoint.OBSIDIAN: ObsidianAdapter(config),
             Endpoint.SIYUAN: SiYuanAdapter(config),
+            Endpoint.UPNOTE: UpNoteAdapter(config),
         }
         self.state_store = state_store or StateStore(config.state_path())
         self.log = logger or (lambda _message: None)

@@ -8,7 +8,7 @@ $versionGeneratorPath = Join-Path $projectRoot 'scripts\generate_windows_version
 $versionInfoPath = Join-Path $projectRoot 'build\windows_version_info.txt'
 $exePath = Join-Path $projectRoot 'dist\NoteSyncHub.exe'
 
-python -c "import PyInstaller, requests, yaml" 2>$null
+python -c "import PyInstaller, requests, yaml, send2trash, markdown, markdownify, bs4" 2>$null
 if ($LASTEXITCODE -ne 0) {
     throw "Missing build dependencies. Run: python -m pip install -e '.[build]'"
 }
@@ -51,6 +51,7 @@ python -m PyInstaller `
     --add-data "$iconImagePath;assets" `
     --version-file $versionInfoPath `
     --collect-all yaml `
+    --collect-all markdown `
     --specpath build `
     --workpath build\pyinstaller `
     --distpath dist `

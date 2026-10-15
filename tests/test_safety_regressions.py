@@ -147,7 +147,7 @@ class SafetyRegressionTests(unittest.TestCase):
         ja, oa, sa = FakeAdapter(E.JOPLIN, [source]), FakeAdapter(E.OBSIDIAN), FakeAdapter(E.SIYUAN)
         oa.upsert_note = lambda *args: (_ for _ in ()).throw(AdapterError("write failed"))
         engine = SyncEngine(self.config, adapters={E.JOPLIN: ja, E.OBSIDIAN: oa, E.SIYUAN: sa}, state_store=MemoryState())
-        options = SyncOptions(mode=SyncMode.ONE_WAY, endpoints=tuple(E), source=E.JOPLIN)
+        options = SyncOptions(mode=SyncMode.ONE_WAY, endpoints=(E.JOPLIN, E.OBSIDIAN, E.SIYUAN), source=E.JOPLIN)
         result = engine.execute(engine.preview(options))
         self.assertEqual({r.endpoint: r.success for r in result.targets}, {E.OBSIDIAN: False, E.SIYUAN: True})
         self.assertEqual(sa.notes[0].body, "new")

@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/app-icon.png" alt="Note Sync Hub 图标" width="128">
   <h1>Note Sync Hub</h1>
-  <p>在 Joplin、Obsidian 与思源笔记之间安全同步 Markdown 笔记。</p>
+  <p>在 Joplin、Obsidian、思源笔记与 UpNote 之间同步笔记。</p>
   <p><strong>简体中文</strong> · <a href="README_EN.md">English</a></p>
   <p>
     <a href="https://github.com/xing-skyline/note-sync-hub/releases/latest"><img src="https://img.shields.io/github/v/release/xing-skyline/note-sync-hub?display_name=tag&sort=semver" alt="最新版本"></a>
@@ -18,7 +18,7 @@
 
 ## 这是什么
 
-Note Sync Hub 是一个本地运行的 Windows 桌面工具。你可以选择任意两个或三个笔记端，在写入前查看完整预览，再决定是否执行同步。
+Note Sync Hub 是一个本地运行的 Windows 桌面工具。你可以选择两个至四个笔记端，在写入前查看完整预览，再决定是否执行同步。
 
 它适合这些场景：
 
@@ -27,24 +27,24 @@ Note Sync Hub 是一个本地运行的 Windows 桌面工具。你可以选择任
 - 让 Joplin、Obsidian、思源笔记共享同一批 Markdown 笔记、标签和附件。
 - 在正式迁移前检查目录映射、冲突和删除影响。
 
-程序没有云端服务、账号系统或遥测。Joplin 与思源通过你填写的 API 地址连接，Obsidian 直接读写本地 Vault。
+程序没有云端服务、账号系统或遥测。Joplin 与思源通过你填写的 API 地址连接，Obsidian 直接读写本地 Vault，UpNote 在完全退出后写入本地数据。软件自身包含适配代码，无需 MCP、AI 工具、个人 Skill 或 CC Switch。
 
 > [!WARNING]
 > 当前版本仍处于早期阶段。第一次使用前请备份笔记库，并先用少量测试笔记验证目录、附件和平台专属语法的转换结果。
 
 ## 功能
 
-以下说明适用于当前源码。已发布的 1.3.0 EXE 不包含后续源码修改。
+以下说明适用于 1.4.1，包含 UpNote 接入与自动识别功能。
 
 | 能力 | 说明 |
 | --- | --- |
-| 两端或三端同步 | 任意启用 Joplin、Obsidian、思源笔记中的两个或三个端 |
-| 单向同步 | 选择一个来源端和一个或两个目标端 |
+| 多端同步 | 启用 Joplin、Obsidian、思源笔记、UpNote 中的两个至四个端 |
+| 单向同步 | 选择一个来源端和一个至三个目标端 |
 | 双向同步 | 所选端都可新增或修改，并明确指定主端处理删除方向 |
 | 只读预览 | 写入前列出新建、更新、移动、删除、关联、跳过和冲突 |
 | 冲突处理 | 手动逐块比较 Markdown；Joplin 与 Obsidian 还可按唯一最新时间生成预览 |
 | 目录映射 | 保持来源结构、写入指定目标目录，或写入目标根目录 |
-| 原文同步 | 不添加同步头部，保留源 Markdown 的属性、注释、空白和换行 |
+| 原文同步 | 不添加同步头部；Markdown 端保留原文，UpNote 经过 HTML 转换，具体边界见下文 |
 | 标签与附件 | 保留原文标签，通过应用属性同步原生标签，并转换附件链接；不为 Obsidian 注入标签头部 |
 | 安全删除 | 删除同步默认关闭；开启后使用各端废纸篓、Windows 回收站或思源托管回收站 |
 | 过期预览保护 | 执行前重新扫描；笔记或附件变化后自动停止，要求重新预览 |
@@ -60,15 +60,16 @@ flowchart LR
     J["Joplin<br>Data API"] <--> H["Note Sync Hub"]
     O["Obsidian<br>本地 Vault"] <--> H
     S["思源笔记<br>Kernel API"] <--> H
+    U["UpNote<br>退出后写入本地数据"] <--> H
     H --> P["只读同步预览"]
     P --> C{"用户确认"}
     C -->|执行| W["写入所选笔记端"]
     C -->|取消| X["不修改数据"]
 ```
 
-Note Sync Hub 通过本地状态文件识别同一条笔记在不同应用中的副本，不再向笔记中加入同步 ID、同步时间、来源注释或 YAML 同步头部。建立关联不会修改来源笔记。状态文件只保存配对和比较所需的信息；程序不会建立第四份完整笔记库。
+Note Sync Hub 通过本地状态文件识别同一条笔记在不同应用中的副本，不再向笔记中加入同步 ID、同步时间、来源注释或 YAML 同步头部。建立关联不会修改来源笔记。状态文件只保存配对和比较所需的信息；程序不会另建完整笔记库。
 
-源 Markdown 原有的 YAML 属性（包括 `tags`）、注释、缩进、空行和换行格式会保留。写入思源时，YAML 属性保存在文档的 `custom-obsidian-*` 属性中，正文只显示笔记内容；原始 YAML 另以无损编码保存，读取同步时恢复。Joplin 等应用中的原生标签不会被转换成额外的 Obsidian YAML 头部；双向同步时，正文编辑也不会因此删除另一端原有的原生标签。
+除 UpNote 外，源 Markdown 原有的 YAML 属性（包括 `tags`）、注释、缩进、空行和换行格式会保留。写入思源时，YAML 属性保存在文档的 `custom-obsidian-*` 属性中，正文只显示笔记内容；原始 YAML 另以无损编码保存，读取同步时恢复。Joplin 等应用中的原生标签不会被转换成额外的 Obsidian YAML 头部；双向同步时，正文编辑也不会因此删除另一端原有的原生标签。
 
 旧版 `notesynchub_*`、`notebridge_*` 同步标记仍可用于识别已有副本。单向同步时，带旧同步头部的目标会列为更新，执行后使用来源内容重写并移除旧标记；来源文件不会为了清理标记而被修改。双向同步中，旧头部会在该副本实际写入时移除。用户自己的 YAML 字段会保留，不会被当作同步头部整体删除。
 
@@ -81,7 +82,7 @@ Note Sync Hub 通过本地状态文件识别同一条笔记在不同应用中的
 打开 [Releases](https://github.com/xing-skyline/note-sync-hub/releases/latest)，下载：
 
 ```text
-NoteSyncHub-v1.3.0-windows-x64.exe
+NoteSyncHub-v1.4.1-windows-x64.exe
 ```
 
 程序为单文件 EXE，无需安装。建议同时下载 `SHA256SUMS.txt` 并核对文件哈希。
@@ -114,6 +115,21 @@ NoteSyncHub-v1.3.0-windows-x64.exe
 
 参考：[思源 Kernel API](https://github.com/siyuan-note/siyuan/blob/master/API.md)
 
+#### UpNote（Windows 本地适配）
+
+当前实现已用 UpNote **9.22.6** 的本地数据库验证，采用非官方数据库适配，不是 UpNote 官方同步接口；后续版本的兼容性仍需验证。
+
+1. 在连接设置中启用 UpNote。程序自动检查当前用户的常见数据位置，包括 `%APPDATA%\UpNote`；找到唯一数据目录时自动填入，发现多个目录时列出供选择。已填写的手动路径不会被覆盖，也可以点击“选择…”指定其他位置。
+2. 默认自动读取默认空间的全部顶层笔记本及子笔记本，在下方目录列表选择同步范围，与其他笔记端使用相同的单向/双向、目录映射、预览和执行流程。未分类笔记对应根目录；按目标目录同步时自动创建缺少的笔记本。需要限定一个顶层笔记本时，可在范围下拉框中选择，无须手填名称。旧版保存的单笔记本范围和相对目录会保留。
+3. 读取、测试连接和生成预览可以在 UpNote 运行时进行。**向 UpNote 写入、移动或删除之前，须自行用 Ctrl+Q 完全退出 UpNote。**程序不会控制桌面、关闭或重启应用；发现它仍在运行就停止写入。
+4. 执行完成后自行打开 UpNote。软件确认的是本机写入和回读；UpNote 的云同步由 UpNote 自身完成，不能据此认定另一台设备已经同步。
+
+支持普通正文、标题、常见列表、代码、图片及本机已有的附件，单个新附件上限为 20 MiB。修改既有笔记保留 UpNote ID；重复同步使用本地状态识别副本。HTML 与 Markdown 互转可能规范化空白和格式，不能保证逐字节保留源 Markdown。
+
+当前限制：仅默认空间；不处理锁定笔记本；同一笔记在所选范围内属于多个笔记本时会停止扫描。YAML 属性、任务清单以及不能安全转换的 HTML 专属格式会拒绝写入；已有 UpNote 笔记含未支持格式或资源时，会阻止正文覆盖。附件未下载到本机时先停止，不生成缺失附件的副本。标题或目录调整在可保持正文时保留原 HTML。
+
+每次写入先在数据目录的 `Note Sync Hub Backups/<时间戳>/upnote.sqlite3` 创建数据库快照，再使用事务修改。程序保留原附件文件，不自动清理历史备份或孤立附件；请按实际空间使用情况管理备份。恢复时须先退出 UpNote，另行保留当前数据库及 WAL/SHM 文件；数据库快照不能替代附件目录备份。
+
 ### 3. 预览并同步
 
 1. 启用需要参与同步的笔记端，填写地址、Vault 和 Token。
@@ -144,7 +160,7 @@ NoteSyncHub-v1.3.0-windows-x64.exe
 
 ### 单向同步
 
-你需要指定一个来源端，再选择一个或两个目标端。目标位置支持三种方式：
+你需要指定一个来源端，再选择一个至三个目标端。目标位置支持三种方式：
 
 | 方式 | 示例结果 |
 | --- | --- |
@@ -152,7 +168,7 @@ NoteSyncHub-v1.3.0-windows-x64.exe
 | 放入指定目标目录 | `归档/B/A/子目录/会议记录` |
 | 放入目标根目录 | `A/子目录/会议记录` |
 
-### 双向与三端同步
+### 双向与多端同步
 
 所选端都可以新增或修改笔记。主端用于确定删除传播方向和冲突的默认参考位置，不是固定写入来源。
 
@@ -168,6 +184,7 @@ NoteSyncHub-v1.3.0-windows-x64.exe
 - Joplin 副本进入 Joplin 废纸篓。
 - Obsidian Markdown 文件进入 Windows 回收站。
 - 思源副本移入 Note Sync Hub 创建和管理的唯一回收站。
+- UpNote 副本移入 UpNote 回收站，写入时同样要求 UpNote 完全退出。
 - 附件不会因删除一条笔记而自动清理，以免误删仍被其他笔记引用的文件。
 
 双向模式下，非主端删除的副本会从主端恢复，不会向其他端传播删除。
@@ -183,7 +200,7 @@ NoteSyncHub-v1.3.0-windows-x64.exe
 - 删除与修改同时发生。
 - 附件缺失、位于 Vault 外，或同名附件无法唯一确定。
 - 同一路径出现多条笔记，或同一同步 ID 出现重复副本。
-- 三端存在多个不同版本。
+- 多端存在多个不同版本。
 
 ### 附件
 
@@ -192,6 +209,7 @@ NoteSyncHub-v1.3.0-windows-x64.exe
 - Joplin：创建或复用 Resource。
 - Obsidian：写入 Vault 附件目录并生成相对 Markdown 链接。
 - 思源笔记：上传到 `assets` 并生成思源资源路径。
+- UpNote：保存本地附件并登记资源索引；重新打开 UpNote 后由应用处理自身同步。
 
 相同内容的附件会优先复用。普通 Obsidian `[[笔记链接]]` 不会被当成附件。
 
@@ -215,7 +233,7 @@ NoteSyncHub-v1.3.0-windows-x64.exe
 
 ## 当前边界
 
-- 这是 Markdown 级同步，不是三个应用内部数据库的完整镜像。
+- 这是 Markdown 级同步，不是各应用内部数据库的完整镜像。
 - Obsidian Dataview、Canvas 和插件私有数据不会完整互转。
 - Joplin 插件字段不会完整互转。
 - 思源数据库、闪卡、块引用、嵌入块等专属能力不能保证无损互转。
@@ -255,7 +273,7 @@ dist\NoteSyncHub.exe
 
 ```text
 note_sync_hub/
-├── adapters/        # Joplin、Obsidian、思源适配器
+├── adapters/        # Joplin、Obsidian、思源、UpNote 适配器
 ├── attachments.py   # 附件识别与内部引用
 ├── diffmerge.py     # Markdown 逐块差异比较
 ├── engine.py        # 扫描、配对与同步规划
@@ -274,7 +292,7 @@ note_sync_hub/
 
 ### 可以只同步两个应用吗？
 
-可以。任意选择 Joplin、Obsidian、思源笔记中的两个端即可。
+可以。选择 Joplin、Obsidian、思源笔记、UpNote 中的两个端即可。
 
 ### 会自动覆盖冲突吗？
 

@@ -255,7 +255,7 @@ class EnginePlannerTests(unittest.TestCase):
         )
         operation = engine.preview(SyncOptions(
             mode=SyncMode.BIDIRECTIONAL,
-            endpoints=tuple(Endpoint),
+            endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN, Endpoint.SIYUAN),
         )).operations[0]
         self.assertEqual(operation.source, Endpoint.JOPLIN)
         self.assertEqual(set(operation.targets), {Endpoint.OBSIDIAN, Endpoint.SIYUAN})
@@ -324,7 +324,7 @@ class EnginePlannerTests(unittest.TestCase):
     def test_latest_policy_rejects_three_way_sync(self):
         options = SyncOptions(
             mode=SyncMode.BIDIRECTIONAL,
-            endpoints=tuple(Endpoint),
+            endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN, Endpoint.SIYUAN),
             conflict_policy=ConflictPolicy.LATEST,
         )
         with self.assertRaisesRegex(ValueError, "仅适用于 Joplin 与 Obsidian"):
@@ -579,7 +579,7 @@ class EnginePlannerTests(unittest.TestCase):
         )
         plan = engine.preview(SyncOptions(
             mode=SyncMode.ONE_WAY,
-            endpoints=tuple(Endpoint),
+            endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN, Endpoint.SIYUAN),
             source=Endpoint.JOPLIN,
             propagate_deletions=True,
         ))
@@ -621,7 +621,7 @@ class EnginePlannerTests(unittest.TestCase):
         )
         operations = engine.preview(SyncOptions(
             mode=SyncMode.BIDIRECTIONAL,
-            endpoints=tuple(Endpoint),
+            endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN, Endpoint.SIYUAN),
             primary=Endpoint.JOPLIN,
             propagate_deletions=True,
         )).operations
@@ -657,7 +657,7 @@ class EnginePlannerTests(unittest.TestCase):
         )
         operation = engine.preview(SyncOptions(
             mode=SyncMode.BIDIRECTIONAL,
-            endpoints=tuple(Endpoint),
+            endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN, Endpoint.SIYUAN),
             primary=Endpoint.JOPLIN,
         )).operations[0]
         self.assertEqual(operation.source, Endpoint.OBSIDIAN)
@@ -699,7 +699,7 @@ class EnginePlannerTests(unittest.TestCase):
         engine, adapters, state = self.engine({Endpoint.JOPLIN: [source]})
         options = SyncOptions(
             mode=SyncMode.ONE_WAY,
-            endpoints=tuple(Endpoint),
+            endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN, Endpoint.SIYUAN),
             source=Endpoint.JOPLIN,
         )
         result = engine.execute(engine.preview(options))
@@ -954,7 +954,7 @@ class EnginePlannerTests(unittest.TestCase):
         adapters[Endpoint.SIYUAN].upsert_note = fail_write
         options = SyncOptions(
             mode=SyncMode.ONE_WAY,
-            endpoints=tuple(Endpoint),
+            endpoints=(Endpoint.JOPLIN, Endpoint.OBSIDIAN, Endpoint.SIYUAN),
             source=Endpoint.JOPLIN,
         )
         result = engine.execute(engine.preview(options))
